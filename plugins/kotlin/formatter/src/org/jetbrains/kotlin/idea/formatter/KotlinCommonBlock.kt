@@ -4,6 +4,7 @@ package org.jetbrains.kotlin.idea.formatter
 
 import com.intellij.formatting.*
 import com.intellij.lang.ASTNode
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
@@ -189,6 +190,7 @@ abstract class KotlinCommonBlock(
         } else if (settings.kotlinCommonSettings.ALIGN_MULTILINE_CHAINED_METHODS) {
             node.qualifierReceiver()?.let {
                 spaces = it.text.split(".").first().length
+                node.siblings(false).forEach { s -> spaces += s.text.length }
                 Indent.Type.SPACES
             } ?: Indent.Type.NORMAL
         } else {
