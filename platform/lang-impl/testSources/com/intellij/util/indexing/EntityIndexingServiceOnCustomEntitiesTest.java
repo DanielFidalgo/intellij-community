@@ -16,9 +16,10 @@ import com.intellij.platform.workspace.storage.EntityStorageKt;
 import com.intellij.platform.workspace.storage.MutableEntityStorage;
 import com.intellij.platform.workspace.storage.url.VirtualFileUrl;
 import com.intellij.testFramework.ServiceContainerUtil;
-import com.intellij.util.Function;
 import com.intellij.util.ThrowableRunnable;
 import com.intellij.util.indexing.roots.IndexableFilesIterator;
+import com.intellij.util.indexing.roots.origin.IndexingRootHolder;
+import com.intellij.util.indexing.roots.origin.IndexingSourceRootHolder;
 import com.intellij.util.indexing.testEntities.IndexingTestEntity;
 import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileIndexContributor;
 import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileKind;
@@ -35,6 +36,7 @@ import java.io.File;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static com.intellij.util.indexing.roots.IndexableEntityProviderMethods.INSTANCE;
@@ -58,7 +60,24 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
     VirtualFile virtualRoot = Objects.requireNonNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root.toPath()));
 
     doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
-      return INSTANCE.createGenericContentEntityIterators(entity.createReference(), Collections.singletonList(virtualRoot));
+      return INSTANCE.createGenericContentEntityIterators(entity.createReference(), IndexingRootHolder.Companion.fromFile(virtualRoot), null);
+    });
+  }
+
+  public void testAddingContentNonRecursiveWithoutModuleCustomWorkspaceEntity() throws Exception {
+    registerWorkspaceFileIndexContributor((entity, registrar) -> {
+      for (VirtualFileUrl root : entity.getRoots()) {
+        registrar.registerNonRecursiveFileSet(root, WorkspaceFileKind.CONTENT, entity, null);
+      }
+    });
+    File root = createTempDir("customRoot");
+    VirtualFile virtualRoot = Objects.requireNonNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root.toPath()));
+
+    doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
+      return INSTANCE.createGenericContentEntityIterators(entity.createReference(),
+                                                          IndexingRootHolder.Companion.fromFiles(Collections.emptyList(),
+                                                                                                 Collections.singletonList(virtualRoot)),
+                                                          null);
     });
   }
 
@@ -73,8 +92,28 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
 
     doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
       return INSTANCE.createExternalEntityIterators(entity.createReference(),
-                                                    Collections.singletonList(virtualRoot),
-                                                    Collections.emptyList());
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.singletonList(virtualRoot),
+                                                                                                 Collections.emptyList()),
+                                                    null);
+    });
+  }
+
+  public void testAddingNonRecursiveExternalCustomWorkspaceEntity() throws Exception {
+    registerWorkspaceFileIndexContributor((entity, registrar) -> {
+      for (VirtualFileUrl root : entity.getRoots()) {
+        registrar.registerNonRecursiveFileSet(root, WorkspaceFileKind.EXTERNAL, entity, null);
+      }
+    });
+    File root = createTempDir("customRoot");
+    VirtualFile virtualRoot = Objects.requireNonNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root.toPath()));
+
+    doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
+      return INSTANCE.createExternalEntityIterators(entity.createReference(),
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.emptyList(),
+                                                                                                 Collections.singletonList(virtualRoot),
+                                                                                                 Collections.emptyList(),
+                                                                                                 Collections.emptyList()),
+                                                    null);
     });
   }
 
@@ -111,8 +150,30 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
 
     doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
       return INSTANCE.createExternalEntityIterators(entity.createReference(),
-                                                    Collections.emptyList(),
-                                                    Collections.singletonList(virtualRoot));
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.emptyList(),
+                                                                                                 Collections.singletonList(virtualRoot)),
+                                                    null);
+    });
+  }
+
+  public void testAddingExternalSourceNonRecursiveCustomWorkspaceEntity() throws Exception {
+    registerWorkspaceFileIndexContributor((entity, registrar) -> {
+      ModuleOrLibrarySourceRootData data = new ModuleOrLibrarySourceRootData() {
+      };
+      for (VirtualFileUrl root : entity.getRoots()) {
+        registrar.registerNonRecursiveFileSet(root, WorkspaceFileKind.EXTERNAL_SOURCE, entity, data);
+      }
+    });
+    File root = createTempDir("customRoot");
+    VirtualFile virtualRoot = Objects.requireNonNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root.toPath()));
+
+    doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
+      return INSTANCE.createExternalEntityIterators(entity.createReference(),
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.emptyList(),
+                                                                                                 Collections.emptyList(),
+                                                                                                 Collections.emptyList(),
+                                                                                                 Collections.singletonList(virtualRoot)),
+                                                    null);
     });
   }
 
@@ -133,6 +194,11 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
     VirtualFile virtualRoot = Objects.requireNonNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root.toPath()));
     WriteAction.run(() -> {
       virtualRoot.createChildData(this, "childFile.txt");
+    });
+
+    doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
+      return INSTANCE.createIterators(myModule, IndexingRootHolder.Companion.fromFiles(Collections.emptyList(),
+                                                                                       Collections.singletonList(virtualRoot)));
     });
 
     try {
@@ -169,6 +235,13 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
     WriteAction.run(() -> {
       VirtualFile childDirectory = virtualRoot.createChildDirectory(this, "childDirectory");
       childDirectory.createChildData(this, "file.txt");
+    });
+
+    doTest(() -> createAndRegisterEntity(getUrls(virtualRoot), Collections.emptyList(), myProject), (entity) -> {
+      return INSTANCE.createIterators(myModule,
+                                      IndexingRootHolder.Companion.fromFiles(
+                                        Collections.singletonList(virtualRoot.findChild("childDirectory")),
+                                        Collections.singletonList(virtualRoot)));
     });
 
     try {
@@ -209,7 +282,10 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
       });
       return createdEntity;
     }, (entity) -> {
-      return INSTANCE.createExternalEntityIterators(entity.createReference(), Collections.singletonList(excluded), Collections.emptyList());
+      return INSTANCE.createExternalEntityIterators(entity.createReference(),
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.singletonList(excluded),
+                                                                                                 Collections.emptyList()),
+                                                    null);
     });
   }
 
@@ -240,8 +316,9 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
       return createdEntity;
     }, (entity) -> {
       return INSTANCE.createExternalEntityIterators(entity.createReference(),
-                                                    Collections.singletonList(excludedBefore),
-                                                    Collections.emptyList());
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.singletonList(excludedBefore),
+                                                                                                 Collections.emptyList()),
+                                                    null);
     });
   }
 
@@ -271,8 +348,9 @@ public class EntityIndexingServiceOnCustomEntitiesTest extends EntityIndexingSer
       });
     }, () -> {
       return INSTANCE.createExternalEntityIterators(otherEntity.createReference(),
-                                                    Collections.singletonList(excluded),
-                                                    Collections.emptyList());
+                                                    IndexingSourceRootHolder.Companion.fromFiles(Collections.singletonList(excluded),
+                                                                                                 Collections.emptyList()),
+                                                    null);
     });
   }
 

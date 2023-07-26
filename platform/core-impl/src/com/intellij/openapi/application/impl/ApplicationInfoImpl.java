@@ -68,6 +68,7 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   private Calendar myBuildDate;
   private Calendar myMajorReleaseBuildDate;
   private String myWelcomeScreenDialog;
+  private String myProductUrl;
   private UpdateUrls myUpdateUrls;
   private String myDocumentationUrl;
   private String mySupportUrl;
@@ -89,7 +90,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   private final List<PluginId> essentialPluginsIds = new ArrayList<>();
   private String myEventLogSettingsUrl = "https://resources.jetbrains.com/storage/fus/config/v4/%s/%s.json";
   private String myJetBrainsTvUrl;
-  private String myKeyConversionUrl = "https://www.jetbrains.com/shop/eform/keys-exchange";
 
   private String mySubscriptionFormId;
   private String mySubscriptionNewsKey;
@@ -180,6 +180,11 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
         }
         break;
 
+        case "productUrl": {
+          myProductUrl = child.getAttributeValue("url");
+        }
+        break;
+
         case "help": {
           String webHelpUrl = getAttributeValue(child, "webhelp-url");
           if (webHelpUrl != null) {
@@ -255,14 +260,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
 
         case "jetbrains-tv": {
           myJetBrainsTvUrl = child.getAttributeValue("url");
-        }
-        break;
-
-        case "licensing": {
-          String url = getAttributeValue(child, "key-conversion-url");
-          if (url != null) {
-            myKeyConversionUrl = url.trim();
-          }
         }
         break;
 
@@ -514,6 +511,11 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   }
 
   @Override
+  public String getProductUrl() {
+    return myProductUrl;
+  }
+
+  @Override
   public @Nullable UpdateUrls getUpdateUrls() {
     return myUpdateUrls;
   }
@@ -620,11 +622,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   @Override
   public String getJetBrainsTvUrl() {
     return myJetBrainsTvUrl;
-  }
-
-  @Override
-  public String getKeyConversionUrl() {
-    return myKeyConversionUrl;
   }
 
   @Override

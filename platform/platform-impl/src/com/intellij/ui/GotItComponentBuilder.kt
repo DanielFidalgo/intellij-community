@@ -88,6 +88,8 @@ class GotItComponentBuilder(textSupplier: GotItTextBuilder.() -> @Nls String) {
   private var secondaryButtonText: String? = null
   private var secondaryButtonAction: () -> Unit = {}
 
+  private var escapeAction: (() -> Unit)? = null
+
   private var maxWidth = MAX_WIDTH
   private var useContrastColors = false
 
@@ -271,6 +273,16 @@ class GotItComponentBuilder(textSupplier: GotItTextBuilder.() -> @Nls String) {
   }
 
   /**
+   * Sets the action to be executed when the escape key is pressed.
+   * Note that the popup will be closed after the action execution.
+   * If escape action is not set, the popup won't be closed on the escape key.
+   */
+  fun onEscapePressed(action: () -> Unit): GotItComponentBuilder {
+    this.escapeAction = action
+    return this
+  }
+
+  /**
    * Limit tooltip text width to the given value. By default, it's limited to [MAX_WIDTH] pixels.
    * Note, that this limitation will not be taken into account if there is an image [withImage].
    */
@@ -339,6 +351,14 @@ class GotItComponentBuilder(textSupplier: GotItTextBuilder.() -> @Nls String) {
         secondaryButtonAction()
         balloon.hide(true)
       }, null)
+    }
+
+    if (escapeAction != null && balloon is BalloonImpl) {
+      balloon.setHideListener {
+        escapeAction?.invoke()
+        balloon.hide(true)
+      }
+      balloon.setHideOnClickOutside(false)
     }
 
     return balloon
@@ -482,11 +502,13 @@ class GotItComponentBuilder(textSupplier: GotItTextBuilder.() -> @Nls String) {
         putClientProperty("gotItButton", true)
         if (useContrastColors) {
           putClientProperty("gotItButton.contrast", true)
-          foreground = JBUI.CurrentTheme.GotItTooltip.buttonForegroundContrast()
         }
         else if (useContrastButton) {
           // make the button bright blue as the default button
           ClientProperty.put(this, DarculaButtonUI.DEFAULT_STYLE_KEY, true)
+        }
+        if (useContrastColors || useContrastButton) {
+          foreground = JBUI.CurrentTheme.GotItTooltip.buttonForegroundContrast()
         }
       }
       buttonConsumer(button)
@@ -500,7 +522,6 @@ class GotItComponentBuilder(textSupplier: GotItTextBuilder.() -> @Nls String) {
         val secondaryButton = createLinkLabel(secondaryButtonText!!,
                                               JBUI.CurrentTheme.GotItTooltip.stepForeground(useContrastColors),
                                               isExternal = false)
-        secondaryButton.setPaintUnderline(false)
         secondaryButtonConsumer(secondaryButton)
 
         buttonPanel.add(secondaryButton)

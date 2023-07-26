@@ -23,6 +23,7 @@ import com.intellij.codeInspection.dataFlow.types.DfTypes;
 import com.intellij.codeInspection.nullable.NullableStuffInspectionBase;
 import com.intellij.codeInspection.util.InspectionMessage;
 import com.intellij.java.analysis.JavaAnalysisBundle;
+import com.intellij.modcommand.ModCommandAction;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.util.WriteExternalException;
 import com.intellij.openapi.util.registry.Registry;
@@ -276,9 +277,10 @@ public abstract class DataFlowInspectionBase extends AbstractBaseJavaLocalInspec
                                var -> VariableAccessUtils.variableIsUsed(var, var.getDeclarationScope()))) {
         return;
       }
+      ModCommandAction action = new RedundantInstanceofFix(expression);
       reporter.registerProblem(expression,
                                JavaAnalysisBundle.message("dataflow.message.redundant.instanceof"),
-                               new RedundantInstanceofFix(expression).asQuickFix());
+                               LocalQuickFix.from(action));
     });
   }
 
@@ -581,11 +583,10 @@ public abstract class DataFlowInspectionBase extends AbstractBaseJavaLocalInspec
                method.getName());
     holder.problem(annoName, msg)
       .maybeFix(AddAnnotationPsiFix.createAddNotNullFix(method))
-      .fix(new SetInspectionOptionFix(this, "REPORT_NULLABLE_METHODS_RETURNING_NOT_NULL",
-                                      JavaAnalysisBundle
-                                        .message(
-                                          "inspection.data.flow.turn.off.nullable.returning.notnull.quickfix"),
-                                      false))
+      .fix(new UpdateInspectionOptionFix(this, "REPORT_NULLABLE_METHODS_RETURNING_NOT_NULL",
+                                         JavaAnalysisBundle.message(
+                                           "inspection.data.flow.turn.off.nullable.returning.notnull.quickfix"),
+                                         false))
       .register();
   }
 

@@ -82,12 +82,12 @@ public class IfStatementWithIdenticalBranchesInspection extends AbstractBaseJava
             LocalQuickFix[] fixes;
             if (myHighlightWhenLastStatementIsCall) {
               fixes = new LocalQuickFix[]{
-                new SetInspectionOptionFix(
+                LocalQuickFix.from(new UpdateInspectionOptionFix(
                   IfStatementWithIdenticalBranchesInspection.this,
                   "myHighlightWhenLastStatementIsCall",
                   JavaAnalysisBundle.message("inspection.common.if.parts.disable.highlight.tail.call"),
                   false
-                ),
+                )),
                 result.myFix
               };
             } else {

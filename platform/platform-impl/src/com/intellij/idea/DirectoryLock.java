@@ -12,6 +12,7 @@ import com.intellij.openapi.util.SystemInfoRt;
 import com.intellij.openapi.util.io.NioFiles;
 import com.intellij.util.Suppressions;
 import com.intellij.util.User32Ex;
+import com.intellij.util.lang.JavaVersion;
 import com.sun.jna.platform.win32.WinDef;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.NotNull;
@@ -102,6 +103,20 @@ final class DirectoryLock {
   }
 
   private static boolean areUdsSupported(Path file) {
+    var fs = file.getFileSystem();
+    if (fs.getClass().getModule() != Object.class.getModule()) {
+      if (!System.getProperty("java.vm.vendor", "").contains("JetBrains") ||
+          JavaVersion.current().compareTo(JavaVersion.compose(17, 0, 6, 894, false)) < 0) {
+        return false;
+      }
+      try {
+        fs.provider().getClass().getMethod("getSunPathForSocketFile", Path.class);
+      }
+      catch (NoSuchMethodException | SecurityException e) {
+        return false;
+      }
+    }
+
     if (!SystemInfoRt.isUnix) {
       try {
         SocketChannel.open(StandardProtocolFamily.UNIX).close();
@@ -112,7 +127,7 @@ final class DirectoryLock {
       catch (IOException ignored) { }
     }
 
-    return file.getFileSystem().getClass().getModule() == Object.class.getModule();
+    return true;
   }
 
   /**

@@ -164,12 +164,14 @@ internal class ChangesViewCommitWorkflowHandler(
 
   val isActive: Boolean get() = ui.isActive
   fun activate(): Boolean = fireActivityStateChanged { ui.activate() }
-  fun deactivate(isRestoreState: Boolean) {
-    fireActivityStateChanged { ui.deactivate(isRestoreState) }
+  fun deactivate(isOnCommit: Boolean) {
+    fireActivityStateChanged { ui.deactivate(isOnCommit) }
     if (isToggleMode()) {
       resetCommitChecksResult()
       ui.commitProgressUi.clearCommitCheckFailures()
-      LineStatusTrackerManager.getInstanceImpl(project).resetExcludedFromCommitMarkers()
+      if (!isOnCommit) {
+        LineStatusTrackerManager.getInstanceImpl(project).resetExcludedFromCommitMarkers()
+      }
     }
   }
 

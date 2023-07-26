@@ -33,12 +33,6 @@ import java.util.*
 import javax.swing.Icon
 import javax.swing.JComponent
 
-private fun getProjectPath(project: Project, recentProjectManager: RecentProjectsManagerBase): String {
-  return recentProjectManager.getProjectPath(project) ?: project.basePath ?: run {
-    //thisLogger().warn("Impossible: no path for project $project")
-    ""
-  }
-}
 
 @Service(Service.Level.PROJECT)
 private class ProjectWindowCustomizerIconCache(private val project: Project) {
@@ -53,19 +47,30 @@ private class ProjectWindowCustomizerIconCache(private val project: Project) {
       cachedIcon.drop()
     })
 
-    // Save into the project workspace whatever was generated on Welcome screen if project workspace doesn't have info
-    project.basePath?.let {
-      val migrated = WorkspaceProjectColorStorage(project).getDataIfEmptyFrom(RecentProjectColorStorage(it))
-      if (!migrated) {
+    // Perform initial setup of storages for the project
+    ProjectWindowCustomizerService.projectPath(project)?.let { path ->
+      val workspaceStorage = WorkspaceProjectColorStorage(project)
+      val recentProjectsStorage = RecentProjectColorStorage(path)
+
+      if (workspaceStorage.isEmpty) {
+        // Clean caches
         ProjectWindowCustomizerService.getInstance().clearToolbarColorsAndInMemoryCache(project)
+
+        if (recentProjectsStorage.isEmpty) {
+          // If recent projects storage is empty, generate the associated index and save it into workspace
+          ProjectWindowCustomizerService.getInstance().getCurrentProjectColorIndex(project)
+        }
+        else {
+          // Otherwise, get colors from recent projects storage
+          workspaceStorage.getDataFrom(recentProjectsStorage)
+        }
       }
     }
   }
 
   private fun getIconRaw(): Icon {
-    val recentProjectsManager = RecentProjectsManagerBase.getInstanceEx()
-    val path = getProjectPath(project, recentProjectsManager)
-    return recentProjectsManager.getProjectIcon(path = path, isProjectValid = true, iconSize = 16)
+    val path = ProjectWindowCustomizerService.projectPath(project) ?: ""
+    return RecentProjectsManagerBase.getInstanceEx().getProjectIcon(path = path, isProjectValid = true, iconSize = 16)
   }
 }
 
@@ -114,6 +119,9 @@ class ProjectWindowCustomizerService : Disposable {
       }
       return result
     }
+
+    @Internal
+    fun projectPath(project: Project): String? = RecentProjectsManagerBase.getInstanceEx().getProjectPath(project) ?: project.basePath
   }
 
   private var wasGradientPainted = isForceColorfulToolbar()
@@ -292,7 +300,7 @@ class ProjectWindowCustomizerService : Disposable {
   }
 
   fun isAvailable(): Boolean {
-    return !DistractionFreeModeController.isDistractionFreeModeEnabled() &&
+    return !DistractionFreeModeController.shouldMinimizeCustomHeader() &&
            (PlatformUtils.isRider () || Registry.`is`("ide.colorful.toolbar", true))
   }
 
@@ -410,6 +418,8 @@ private interface ProjectColorStorage {
   var customColor: String?
   var associatedIndex: Int?
   val projectPath: String?
+
+  val isEmpty: Boolean get() = (customColor?.isNotEmpty() != true) && (associatedIndex?.let { it >= 0 } != true)
 }
 
 private class WorkspaceProjectColorStorage(val project: Project): ProjectColorStorage {
@@ -429,20 +439,14 @@ private class WorkspaceProjectColorStorage(val project: Project): ProjectColorSt
 
   private var isMigrating = false
 
-  override val projectPath: String? get() = project.basePath
+  override val projectPath: String? get() = ProjectWindowCustomizerService.projectPath(project)
   private val manager: ProjectColorInfoManager get() = ProjectColorInfoManager.getInstance(project)
 
-  val isEmpty: Boolean get() = (customColor?.isNotEmpty() != true) && (associatedIndex?.let { it >= 0 } != true)
-
-  fun getDataIfEmptyFrom(storage: ProjectColorStorage): Boolean {
-    if (!isEmpty) return false
-
+  fun getDataFrom(storage: ProjectColorStorage) {
     isMigrating = true
     customColor = storage.customColor
     associatedIndex = storage.associatedIndex
     isMigrating = false
-
-    return true
   }
 }
 

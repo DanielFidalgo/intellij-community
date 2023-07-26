@@ -2,6 +2,8 @@
 package com.intellij.modcommand;
 
 import com.intellij.codeInsight.intention.IntentionAction;
+import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo;
+import com.intellij.codeInspection.InspectionProfileEntry;
 import com.intellij.codeInspection.LocalQuickFix;
 import com.intellij.codeInspection.LocalQuickFixAndIntentionActionOnPsiElement;
 import com.intellij.modcommand.ModCommandAction.ActionContext;
@@ -32,12 +34,7 @@ public interface ModCommandService {
                                                                                                          @NotNull PsiElement psiElement);
 
   /**
-   * @param action action to wrap
-   * @return the action adapted to {@link LocalQuickFix} interface. The adapter is not perfect. In particular,
-   * its {@link LocalQuickFix#getName()} simply returns the result of {@link ModCommandAction#getFamilyName()}. If the client
-   * of the quick-fix is ModCommand-aware, it can use {@link #unwrap(LocalQuickFix)} to get
-   * the action back.
-   * @see ModCommandAction#asQuickFix()
+   * Implementation of {@link LocalQuickFix#from(ModCommandAction)}. Should not be used directly
    */
   @NotNull LocalQuickFix wrapToQuickFix(@NotNull ModCommandAction action);
 
@@ -53,6 +50,19 @@ public interface ModCommandService {
    */
   @NotNull ModCommand psiUpdate(@NotNull ActionContext context,
                                 @NotNull Consumer<@NotNull ModPsiUpdater> updater);
+
+  /**
+   * Implementation of ModCommands.updateOption; should not be used directly 
+   */
+  <T extends InspectionProfileEntry> @NotNull ModCommand updateOption(
+    @NotNull PsiElement context, @NotNull T inspection, @NotNull Consumer<@NotNull T> updater);
+
+  /**
+   * @param modCommand {@link ModCommand} to generate preview for
+   * @param context context in which the action is about to be executed
+   * @return default preview for a given ModCommand
+   */
+  @NotNull IntentionPreviewInfo getPreview(@NotNull ModCommand modCommand, @NotNull ActionContext context);
 
   /**
    * @return an instance of this service
