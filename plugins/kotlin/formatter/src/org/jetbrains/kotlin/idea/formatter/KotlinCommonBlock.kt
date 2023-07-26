@@ -183,14 +183,20 @@ abstract class KotlinCommonBlock(
     // enforce indent to children when there's a line break before the dot in any call in the chain (meaning that
     // the call chain following that call is indented)
     private fun createIndentForQualifierExpression(enforceIndentToChildren: Boolean): Indent {
+        var spaces = 0
         val indentType = if (settings.kotlinCustomSettings.CONTINUATION_INDENT_FOR_CHAINED_CALLS) {
             if (enforceIndentToChildren) Indent.Type.CONTINUATION else Indent.Type.CONTINUATION_WITHOUT_FIRST
+        } else if (settings.kotlinCommonSettings.ALIGN_MULTILINE_CHAINED_METHODS) {
+            node.qualifierReceiver()?.let {
+                spaces = it.text.split(".").first().length
+                Indent.Type.SPACES
+            } ?: Indent.Type.NORMAL
         } else {
             Indent.Type.NORMAL
         }
 
         return Indent.getIndent(
-            indentType, false,
+            indentType, spaces, false,
             enforceIndentToChildren,
         )
     }
