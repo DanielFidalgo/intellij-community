@@ -71,15 +71,17 @@ public class EnhancedSwitchMigrationInspection extends AbstractBaseJavaLocalInsp
           List<LocalQuickFix> fixes = new ArrayList<>();
           fixes.add(new ReplaceWithSwitchExpressionFix(replacer.getType()));
           if (!myWarnOnlyOnExpressionConversion && replacer.getType() == ReplacementType.Statement) {
-            fixes.add(new SetInspectionOptionFix(EnhancedSwitchMigrationInspection.this, "myWarnOnlyOnExpressionConversion",
-                                                 JavaBundle.message("inspection.switch.expression.migration.warn.only.on.expression"),
-                                                 true));
+            fixes.add(LocalQuickFix.from(new UpdateInspectionOptionFix(
+              EnhancedSwitchMigrationInspection.this, "myWarnOnlyOnExpressionConversion",
+              JavaBundle.message("inspection.switch.expression.migration.warn.only.on.expression"),
+              true)));
           }
           if (replacer.getType() == ReplacementType.Expression && replacer.getMaxNumberStatementsInBranch() != null && replacer.getMaxNumberStatementsInBranch() > 1) {
             int newMaxValue = replacer.getMaxNumberStatementsInBranch() - 1;
-            fixes.add(new SetInspectionOptionFix(EnhancedSwitchMigrationInspection.this, "myMaxNumberStatementsForBranch",
-                                                 JavaBundle.message("inspection.switch.expression.migration.option.expression.max.statements", newMaxValue),
-                                                 newMaxValue));
+            fixes.add(LocalQuickFix.from(new UpdateInspectionOptionFix(
+              EnhancedSwitchMigrationInspection.this, "myMaxNumberStatementsForBranch",
+              JavaBundle.message("inspection.switch.expression.migration.option.expression.max.statements", newMaxValue),
+              newMaxValue)));
           }
           holder.registerProblem(switchKeyword, JavaBundle.message("inspection.switch.expression.migration.inspection.switch.description"),
                                  ProblemHighlightType.GENERIC_ERROR_OR_WARNING, fixes.toArray(LocalQuickFix.EMPTY_ARRAY));
@@ -956,6 +958,14 @@ public class EnhancedSwitchMigrationInspection extends AbstractBaseJavaLocalInsp
     }
   }
 
+  /**
+   * Adds comments until the next label statement in a switch branch.
+   * If comments exist, <code>builder</code> will end with '\n'
+   *
+   * @param ct      the CommentTracker object for tracking comments
+   * @param branch  the SwitchBranch object representing a switch branch
+   * @param builder the StringBuilder object to append comments to
+   */
   private static void addCommentsUntilNextLabel(CommentTracker ct, SwitchBranch branch, StringBuilder builder) {
     PsiElement label = ContainerUtil.find(branch.myUsedElements, e -> e instanceof PsiSwitchLabelStatement);
     if (!(label instanceof PsiSwitchLabelStatement labelStatement)) {

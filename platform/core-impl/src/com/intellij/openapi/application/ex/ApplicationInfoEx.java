@@ -32,7 +32,6 @@ public abstract class ApplicationInfoEx extends ApplicationInfo {
    */
   public abstract @NotNull String getApplicationSvgIconUrl();
 
-
   public abstract @Nullable String getApplicationCustomIcon();
 
   /**
@@ -59,6 +58,11 @@ public abstract class ApplicationInfoEx extends ApplicationInfo {
 
   @ApiStatus.Experimental
   public abstract boolean isPreview();
+
+  public final String getDownloadUrl() {
+    String productUrl = getProductUrl();
+    return productUrl != null ? productUrl + "download/" : null;
+  }
 
   public abstract @Nullable UpdateUrls getUpdateUrls();
 

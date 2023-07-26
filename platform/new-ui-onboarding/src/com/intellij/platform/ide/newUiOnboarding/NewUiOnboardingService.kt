@@ -5,12 +5,26 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindowId
+import com.intellij.openapi.wm.ToolWindowManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @Service(Service.Level.PROJECT)
 internal class NewUiOnboardingService(private val project: Project, private val cs: CoroutineScope) {
+  fun showOnboardingDialog() {
+    val dialog = NewUiOnboardingDialog(project)
+    val startTour = dialog.showAndGet()
+    if (startTour) {
+      startOnboarding()
+    }
+    else {
+      val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.MEET_NEW_UI)
+      toolWindow?.activate(null)
+    }
+  }
+
   fun startOnboarding() {
     val steps = getSteps()
     val executor = NewUiOnboardingExecutor(project, steps, cs, project)

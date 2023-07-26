@@ -6,10 +6,12 @@ import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
 import com.intellij.notification.Notifications
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -20,7 +22,6 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.jetbrains.python.PyBundle
 import com.jetbrains.python.black.configuration.BlackFormatterConfiguration
 import org.jetbrains.annotations.Nls
-import kotlin.coroutines.cancellation.CancellationException
 
 class BlackFormatterActionOnSave : ActionOnSave() {
 
@@ -69,6 +70,8 @@ class BlackFormatterActionOnSave : ActionOnSave() {
         object : Task.Backgroundable(project, PyBundle.message("black.formatting.with.black"), true) {
           override fun run(indicator: ProgressIndicator) {
             var processedFiles = 0L
+            indicator.text = PyBundle.message("black.formatting.with.black")
+            indicator.isIndeterminate = false
 
             descriptors.forEach { descriptor ->
               processedFiles++
@@ -76,14 +79,16 @@ class BlackFormatterActionOnSave : ActionOnSave() {
               indicator.text = PyBundle.message("black.processing.file.name", descriptor.virtualFile.name)
               val request = BlackFormattingRequest.File(descriptor.document.text, descriptor.virtualFile)
               val response = executor.getBlackFormattingResponse(request, BlackFormatterExecutor.BLACK_DEFAULT_TIMEOUT)
-              applyChanges(project, descriptor, response)
+              if (!indicator.isCanceled) {
+                applyChanges(project, descriptor, response)
+              }
             }
           }
         }
       )
     }.onFailure { exception ->
       when (exception) {
-        is CancellationException -> { /* ignore */ }
+        is ProcessCanceledException -> { /* ignore */ }
         else -> {
           LOG.warn(exception)
           reportFailure(PyBundle.message("black.exception.error.message"), exception.localizedMessage, project)
@@ -95,9 +100,10 @@ class BlackFormatterActionOnSave : ActionOnSave() {
   private fun applyChanges(project: Project, descriptor: Descriptor, response: BlackFormattingResponse) {
     when (response) {
       is BlackFormattingResponse.Success -> {
-        WriteCommandAction.writeCommandAction(project)
-          .withName(PyBundle.message("black.formatting.with.black"))
-          .run<RuntimeException> { descriptor.document.setText(response.formattedText) }
+        if (response.formattedText != ReadAction.compute<String, Exception> { descriptor.document.text })
+          WriteCommandAction.writeCommandAction(project)
+            .withName(PyBundle.message("black.formatting.with.black"))
+            .run<Exception> { descriptor.document.setText(response.formattedText) }
       }
       is BlackFormattingResponse.Failure -> {
         reportFailure(response.title, response.getPopupMessage(), project)

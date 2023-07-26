@@ -16,7 +16,6 @@ import com.intellij.openapi.vfs.newvfs.persistent.dev.blobstorage.ByteBufferWrit
 import com.intellij.openapi.vfs.newvfs.persistent.intercept.ConnectionInterceptor;
 import com.intellij.serviceContainer.AlreadyDisposedException;
 import com.intellij.util.Processor;
-import com.intellij.util.SlowOperations;
 import com.intellij.util.SystemProperties;
 import com.intellij.util.io.DataOutputStream;
 import it.unimi.dsi.fastutil.ints.IntList;
@@ -27,7 +26,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.IntPredicate;
 
@@ -36,6 +34,17 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 /**
  * This class is just an 'instance holder' -- actual implementation is an {@link FSRecordsImpl} instance,
  * all methods delegate to it.
+ * <p>
+ * Current policy: avoid use of this class outside of VFS impl code, inside VFS impl code migrate to use
+ * the {@link FSRecordsImpl} _instance_ obtained by {@link #connect(List)}/{@link #getInstance()}.
+ * <p>
+ * This is very low-level API, intended to be used only by VFS implementation code only -- mainly
+ * {@link PersistentFSImpl}. Inside VFS implementation all the calls should go through the instance
+ * obtained by {@link #connect(List)}. Current usages of static methods should be gradually migrated.
+ * {@link FSRecords#getInstance()} method could be used to help with migration.
+ * <p>
+ * At the end I plan to convert {@link FSRecordsImpl} a regular {@link com.intellij.openapi.components.Service},
+ * with a usual .getInstance() method.
  */
 @ApiStatus.Internal
 public final class FSRecords {
@@ -54,7 +63,7 @@ public final class FSRecords {
    * records explicitly -- because it is consistent with id=0 being used as NULL in other parts
    * of app, e.g. in DataEnumerator
    */
-  static final int NULL_FILE_ID = 0;
+  public static final int NULL_FILE_ID = 0;
 
   /**
    * fileId of artificial 'directory' all FS roots are attached to as children. This fs-record
@@ -84,16 +93,18 @@ public final class FSRecords {
 
   //========== lifecycle: =====================================================
 
-  static synchronized void connect(@NotNull List<ConnectionInterceptor> connectionInterceptors) throws UncheckedIOException {
-    connect(connectionInterceptors, FSRecordsImpl.getDefaultErrorHandler());
+  static synchronized FSRecordsImpl connect(@NotNull List<ConnectionInterceptor> connectionInterceptors) throws UncheckedIOException {
+    return connect(connectionInterceptors, FSRecordsImpl.getDefaultErrorHandler());
   }
 
-  static synchronized void connect(@NotNull List<ConnectionInterceptor> connectionInterceptors,
-                                   @NotNull FSRecordsImpl.ErrorHandler errorHandler) throws UncheckedIOException {
-    impl = FSRecordsImpl.connect(Path.of(getCachesDir()), connectionInterceptors, errorHandler);
+  static synchronized FSRecordsImpl connect(@NotNull List<ConnectionInterceptor> connectionInterceptors,
+                                            @NotNull FSRecordsImpl.ErrorHandler errorHandler) throws UncheckedIOException {
+    FSRecordsImpl _impl = FSRecordsImpl.connect(Path.of(getCachesDir()), connectionInterceptors, errorHandler);
+    impl = _impl;
+    return _impl;
   }
 
-  static synchronized void dispose() {
+  static synchronized void disconnect() {
     FSRecordsImpl _impl = impl;
     if (_impl != null) {
       _impl.dispose();
@@ -103,13 +114,18 @@ public final class FSRecords {
   }
 
 
-  static @NotNull FSRecordsImpl implOrFail() {
+  private static @NotNull FSRecordsImpl implOrFail() {
     FSRecordsImpl _impl = impl;
     if (_impl == null || _impl.isDisposed()) {
       throw alreadyDisposed();
     }
 
     return _impl;
+  }
+
+  /** @throws AlreadyDisposedException if VFS is disposed (or not yet initialized) */
+  public static @NotNull FSRecordsImpl getInstance() throws AlreadyDisposedException {
+    return implOrFail();
   }
 
 
@@ -121,20 +137,6 @@ public final class FSRecords {
 
   public static long getCreationTimestamp() {
     return implOrFail().getCreationTimestamp();
-  }
-
-  /** Intermediate failures met during VFS initialization (if any) */
-  public static List<Throwable> initializationFailures() {
-    return implOrFail().initializationFailures();
-  }
-
-  /** Were VFS storages created anew this run, or we read already filled */
-  public static boolean wasCreateANew() {
-    return implOrFail().wasCreatedANew();
-  }
-
-  public static long totalInitializationDuration(@NotNull TimeUnit unit) {
-    return implOrFail().totalInitializationDuration(unit);
   }
 
   //========== modifications counters: ========================================
@@ -255,7 +257,6 @@ public final class FSRecords {
   static @NotNull ListResult update(@NotNull VirtualFile parent,
                                     int parentId,
                                     @NotNull Function<? super ListResult, ListResult> childrenConvertor) {
-    SlowOperations.assertSlowOperationsAreAllowed();
     return implOrFail().update(parent, parentId, childrenConvertor);
   }
 
@@ -395,7 +396,7 @@ public final class FSRecords {
   public static <R> @Nullable R readAttributeRawWithLock(int fileId,
                                                          @NotNull FileAttribute attribute,
                                                          ByteBufferReader<R> reader) {
-    return implOrFail().readAttributeRawWithLock(fileId, attribute, reader);
+    return implOrFail().readAttributeRaw(fileId, attribute, reader);
   }
 
   @ApiStatus.Internal
@@ -452,7 +453,7 @@ public final class FSRecords {
   /** Method creates 'VFS corruption marker', which forces VFS to rebuild on the next startup */
   public static void invalidateCaches(@NotNull String diagnosticMessage,
                                       @NotNull Throwable errorCause) {
-    implOrFail().invalidateCaches(diagnosticMessage, errorCause);
+    implOrFail().scheduleRebuild(diagnosticMessage, errorCause);
   }
 
   /**
@@ -461,7 +462,7 @@ public final class FSRecords {
    * considered a scenario as 'an error', but as a regular request -- e.g. no errors logged.
    */
   public static void invalidateCaches(@NotNull String diagnosticMessage) {
-    implOrFail().invalidateCaches(diagnosticMessage, null);
+    implOrFail().scheduleRebuild(diagnosticMessage, null);
   }
 
   /** @deprecated please use {@link #invalidateCaches(String)} instead -> provide explicit reason for invalidate caches */
@@ -491,11 +492,6 @@ public final class FSRecords {
   }
 
   //========== diagnostic, sanity checks: ==================================
-
-
-  static void checkSanity() {
-    implOrFail().checkSanity();
-  }
 
   /**
    * @return human-readable description of file fileId -- as much information as VFS now contains

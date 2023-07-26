@@ -37,7 +37,7 @@ boolean isUnix = Os.isFamily(Os.FAMILY_UNIX)
 
 envs {
   String python27version = "2.7.18"
-  String python36version = "3.6.8"
+  String python36version = (isWindows) ?  "3.6.8" : "3.6.15" // 3.6.8 is broken on modern libc and clang, but latest version for Windows
   String python37version = "3.7.9"
   String python38version = "3.8.10"
   String python39version = "3.9.13"
@@ -92,13 +92,25 @@ envs {
       doLast {
         if (tags) new File(pythonDirectory, "tags.txt").write(tags)
 
-        if (createLink) {
-          String versionMajor = version.split(/\./)[0]
-          String versionMinor = version.split(/\./)[1]
-          versionMinor = versionMinor.endsWith("-dev") ? versionMinor.substring(0, versionMinor.indexOf("-dev"))
-                                                       : versionMinor
-          String linkName = "python$versionMajor.$versionMinor"
+        String versionMajor = version.split(/\./)[0]
+        String versionMinor = version.split(/\./)[1]
+        versionMinor = versionMinor.endsWith("-dev") ? versionMinor.substring(0, versionMinor.indexOf("-dev"))
+                                                     : versionMinor
+        // Pregenerate pyc
+        String linkName = "python$versionMajor.$versionMinor"
+        def path = pythonDirectory.toPath()
+        def python = path.resolve(isWindows ? "python.exe" : "bin/${linkName}").toString()
+        def lib = path.resolve("lib").toString()
+        def command = "import compileall; compileall.compile_dir('${lib}', force=True, quiet=True)"
 
+        def result = new StringBuilder()
+        def error     = new StringBuilder()
+        def process = "${python} -c \"$command\"".execute()
+        process.consumeProcessErrorStream(error)
+        process.consumeProcessOutputStream(result)
+        process.waitForOrKill(60000)
+
+        if (createLink) {
           Closure createLinkClosure = { Path link, Path existing ->
             if (!link.toFile().exists()) Files.createLink(link, existing)
           }

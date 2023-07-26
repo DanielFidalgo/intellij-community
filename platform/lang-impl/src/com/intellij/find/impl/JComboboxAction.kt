@@ -9,6 +9,7 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.Presentation
 import com.intellij.openapi.actionSystem.ex.CustomComponentAction
+import com.intellij.openapi.application.runInEdt
 import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -63,6 +64,12 @@ class JComboboxAction(val project: Project, val onChanged: () -> Unit) : AnActio
       selectedItem = FindSettings.getInstance().fileMask ?: emptyText
       findModel.fileFilter = FindSettings.getInstance().fileMask
       addActionListener(ActionListener { rebuild() })
+
+      findModel.addObserver {
+        runInEdt {
+          if (findModel.fileFilter == null) selectedItem = emptyText
+        }
+      }
 
       (editor.editorComponent as JTextField).also {
         it.background = JBUI.CurrentTheme.BigPopup.searchFieldBackground()

@@ -13,7 +13,7 @@ import com.intellij.codeInsight.intention.QuickFixFactory;
 import com.intellij.codeInspection.AbstractBaseJavaLocalInspectionTool;
 import com.intellij.codeInspection.LocalQuickFix;
 import com.intellij.codeInspection.ProblemsHolder;
-import com.intellij.codeInspection.SetInspectionOptionFix;
+import com.intellij.codeInspection.UpdateInspectionOptionFix;
 import com.intellij.codeInspection.options.OptPane;
 import com.intellij.codeInspection.util.InspectionMessage;
 import com.intellij.java.JavaBundle;
@@ -69,21 +69,23 @@ public class NotNullFieldNotInitializedInspection extends AbstractBaseJavaLocalI
 
         List<LocalQuickFix> fixes = new ArrayList<>();
         if (implicitWrite) {
-          fixes.add(new SetInspectionOptionFix(NotNullFieldNotInitializedInspection.this,
-                                               IGNORE_IMPLICITLY_WRITTEN_FIELDS_NAME,
-                                               JavaBundle.message("inspection.notnull.field.not.initialized.option.implicit"), true));
+          fixes.add(LocalQuickFix.from(new UpdateInspectionOptionFix(
+            NotNullFieldNotInitializedInspection.this,
+            IGNORE_IMPLICITLY_WRITTEN_FIELDS_NAME,
+            JavaBundle.message("inspection.notnull.field.not.initialized.option.implicit"), true)));
         }
         if (writtenInSetup) {
-          fixes.add(new SetInspectionOptionFix(NotNullFieldNotInitializedInspection.this,
-                                               IGNORE_FIELDS_WRITTEN_IN_SETUP_NAME,
-                                               JavaBundle.message("inspection.notnull.field.not.initialized.option.setup"), true));
+          fixes.add(LocalQuickFix.from(new UpdateInspectionOptionFix(
+            NotNullFieldNotInitializedInspection.this,
+            IGNORE_FIELDS_WRITTEN_IN_SETUP_NAME,
+            JavaBundle.message("inspection.notnull.field.not.initialized.option.setup"), true)));
         }
         if (ownAnnotation) {
           fixes.add(QuickFixFactory.getInstance().createDeleteFix(annotation, JavaBundle.message("quickfix.text.remove.not.null.annotation")));
         }
         if (isOnTheFly) {
-          fixes.add(new InitializeFinalFieldInConstructorFix(field).asQuickFix());
-          fixes.add(new AddVariableInitializerFix(field).asQuickFix());
+          fixes.add(LocalQuickFix.from(new InitializeFinalFieldInConstructorFix(field)));
+          fixes.add(LocalQuickFix.from(new AddVariableInitializerFix(field)));
         }
 
         reportProblem(holder, anchor, message, fixes);

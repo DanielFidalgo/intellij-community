@@ -2,6 +2,7 @@
 package com.intellij.xdebugger.impl.inline;
 
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.EditorFactory;
@@ -14,6 +15,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.TextEditor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
+import com.intellij.util.DocumentUtil;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.ui.EDT;
 import com.intellij.xdebugger.*;
@@ -62,7 +64,7 @@ public final class XDebuggerInlayUtil {
             }
           }
           DebuggerUIUtil.repaintCurrentEditor(project); // to update inline debugger data
-        }, project.getDisposed());
+        }, ModalityState.nonModal(), project.getDisposed());
       }
     });
     EditorFactory.getInstance().addEditorFactoryListener(new EditorFactoryListener() {
@@ -79,7 +81,7 @@ public final class XDebuggerInlayUtil {
     if (valueNode.getValuePresentation() != null) {
       ApplicationManager.getApplication().invokeLater(() -> {
         createInlayInt(session, new InlineDebugRenderer(valueNode, position, session));
-      }, session.getProject().getDisposed());
+      }, ModalityState.nonModal(), session.getProject().getDisposed());
       return true;
     }
     return false;
@@ -91,8 +93,10 @@ public final class XDebuggerInlayUtil {
     FileEditor editor = FileEditorManager.getInstance(session.getProject()).getSelectedEditor(position.getFile());
     if (editor instanceof TextEditor) {
       Editor e = ((TextEditor)editor).getEditor();
-      int lineStart = e.getDocument().getLineStartOffset(position.getLine());
-      int lineEnd = e.getDocument().getLineEndOffset(position.getLine());
+      int line = position.getLine();
+      if (!DocumentUtil.isValidLine(line, e.getDocument())) return;
+      int lineStart = e.getDocument().getLineStartOffset(line);
+      int lineEnd = e.getDocument().getLineEndOffset(line);
 
       // Don't add the same value twice.
       List<Inlay<? extends InlineDebugRenderer>> existingInlays =
@@ -127,7 +131,7 @@ public final class XDebuggerInlayUtil {
   }
 
   public void clearInlays() {
-    ApplicationManager.getApplication().invokeLater(() -> clearInlaysInt(myProject), myProject.getDisposed());
+    ApplicationManager.getApplication().invokeLater(() -> clearInlaysInt(myProject), ModalityState.nonModal(), myProject.getDisposed());
   }
 
   private static List<Inlay> clearInlaysInEditor(@NotNull Editor editor) {
