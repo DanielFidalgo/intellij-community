@@ -9,6 +9,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.TokenType
+import com.intellij.psi.TokenType.NEW_LINE_INDENT
 import com.intellij.psi.codeStyle.CodeStyleSettings
 import com.intellij.psi.codeStyle.CommonCodeStyleSettings
 import com.intellij.psi.impl.source.tree.TreeUtil
@@ -189,8 +190,7 @@ abstract class KotlinCommonBlock(
             if (enforceIndentToChildren) Indent.Type.CONTINUATION else Indent.Type.CONTINUATION_WITHOUT_FIRST
         } else if (settings.kotlinCommonSettings.ALIGN_MULTILINE_CHAINED_METHODS) {
             node.qualifierReceiver()?.let {
-                spaces = it.text.split(".").first().length
-                node.siblings(false).forEach { s -> spaces += s.text.length }
+                spaces = calculateQualifierIndentSpaces(it)
                 Indent.Type.SPACES
             } ?: Indent.Type.NORMAL
         } else {
@@ -201,6 +201,26 @@ abstract class KotlinCommonBlock(
             indentType, spaces, false,
             enforceIndentToChildren,
         )
+    }
+
+    private fun calculateQualifierIndentSpaces(qualifierNode: ASTNode): Int {
+        var spaces: Int = qualifierNode.text.split('.').first().length
+        val siblings =
+            node.siblings(false)
+                .filter { f -> f.elementType != LBRACE }
+                .filter { f -> f.elementType != DANGLING_NEWLINE }
+
+        val whiteSpaces = siblings.filter { f -> f.elementType == WHITE_SPACE }
+        if (whiteSpaces.count() > 0) {
+            whiteSpaces.filter { w -> (w.text.any { a -> a == '\n' }).not() }
+                       .forEach { w -> spaces += w.text.length }
+        }
+
+        siblings.filter { f -> f.elementType != WHITE_SPACE }
+                .filter { f -> f.elementType != PROPERTY }
+                .filter { f -> f.elementType != NEW_LINE_INDENT }
+                .forEach { s -> spaces += s.text.length }
+        return spaces
     }
 
     private fun List<ASTBlock>.wrapToBlock(
