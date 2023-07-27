@@ -109,8 +109,6 @@
     <applicationService serviceInterface="com.intellij.openapi.keymap.KeymapManager"
                         serviceImplementation="com.intellij.openapi.keymap.impl.KeymapManagerImpl"/>
 
-    <applicationService serviceImplementation="com.intellij.diagnostic.DebugLogManager"/>
-
     <applicationService serviceInterface="com.intellij.openapi.project.ProjectManager"
                         serviceImplementation="com.intellij.openapi.project.impl.ProjectManagerImpl"
                         testServiceImplementation="com.intellij.project.TestProjectManager"/>
@@ -729,7 +727,7 @@
     <projectFileScanner implementation="com.intellij.execution.impl.RunConfigurationInArbitraryFileScanner"/>
     <vfs.asyncListener implementation="com.intellij.execution.impl.RCInArbitraryFileListener"/>
     <editorNotificationProvider implementation="com.intellij.execution.impl.RunConfigEditorNotificationProvider"/>
-    <backgroundPostStartupActivity implementation="com.intellij.execution.impl.RunConfigurationFeatureCollector"/>
+    <postStartupActivity implementation="com.intellij.execution.impl.RunConfigurationFeatureCollector"/>
     <applicationService serviceInterface="com.intellij.execution.ui.FragmentStatisticsService"
                         serviceImplementation="com.intellij.execution.impl.statistics.FragmentedStatisticsServiceImpl"/>
     <statistics.counterUsagesCollector implementationClass="com.intellij.execution.impl.statistics.RunConfigurationOptionUsagesCollector"/>

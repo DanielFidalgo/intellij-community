@@ -615,7 +615,8 @@
       "Icon": {
         "background": "Grey2",
         "hoverBackground": "Grey3",
-        "pressedBackground": "Grey3"
+        "pressedBackground": "Grey3",
+        "insets": "5,5,5,5"
       },
       "Dropdown": {
         "foreground": "Grey12",
@@ -635,7 +636,6 @@
       "background": "Grey13",
       "inactiveBackground": "Grey13",
       "Button": {
-        "hoverBackground": "#00000000",
         "preferredSize": "44,40"
       }
     },

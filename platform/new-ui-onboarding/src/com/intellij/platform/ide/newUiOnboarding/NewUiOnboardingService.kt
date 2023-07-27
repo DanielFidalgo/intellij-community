@@ -7,6 +7,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowId
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.platform.ide.newUiOnboarding.NewUiOnboardingStatistics.OnboardingStartingPlace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -15,13 +16,16 @@ import kotlinx.coroutines.launch
 internal class NewUiOnboardingService(private val project: Project, private val cs: CoroutineScope) {
   fun showOnboardingDialog() {
     val dialog = NewUiOnboardingDialog(project)
+    NewUiOnboardingStatistics.logWelcomeDialogShown()
     val startTour = dialog.showAndGet()
     if (startTour) {
       startOnboarding()
+      NewUiOnboardingStatistics.logOnboardingStarted(OnboardingStartingPlace.WELCOME_DIALOG)
     }
     else {
       val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.MEET_NEW_UI)
       toolWindow?.activate(null)
+      NewUiOnboardingStatistics.logWelcomeDialogSkipPressed()
     }
   }
 
@@ -31,14 +35,29 @@ internal class NewUiOnboardingService(private val project: Project, private val 
     cs.launch(Dispatchers.EDT) { executor.start() }
   }
 
-  private fun getSteps(): List<NewUiOnboardingStep> {
-    // todo: add an ability to provide custom steps order (for other IDEs that want to customize the onboarding)
-    val stepIds = getDefaultStepsOrder()
+  private fun getSteps(): List<Pair<String, NewUiOnboardingStep>> {
+    val stepIds = getStepOrder()
     val stepExtensions = NewUiOnboardingStep.EP_NAME.extensions
     return stepIds.mapNotNull { id ->
       val step = stepExtensions.find { it.key == id }?.instance
-      step?.takeIf { it.isAvailable() }
+      if (step?.isAvailable() == true) {
+        id to step
+      }
+      else null
     }
+  }
+
+  private fun getStepOrder(): List<String> {
+    val defaultOrder = getDefaultStepsOrder()
+    val customizations = NewUiOnboardingBean.getInstance().customizations
+    if (customizations.isEmpty()) {
+      return defaultOrder
+    }
+    val mutableSteps = defaultOrder.toMutableList()
+    for (customization in customizations) {
+      customization.customize(mutableSteps)
+    }
+    return mutableSteps
   }
 
   private fun getDefaultStepsOrder(): List<String> {

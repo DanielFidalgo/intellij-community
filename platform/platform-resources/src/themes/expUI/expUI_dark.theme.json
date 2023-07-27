@@ -594,7 +594,8 @@
     "MainToolbar": {
       "Icon": {
         "background": "Grey2",
-        "pressedBackground": "Grey3"
+        "pressedBackground": "Grey3",
+        "insets": "5,5,5,5"
       },
       "Dropdown": {
         "pressedBackground": "Grey3",
@@ -619,8 +620,7 @@
 
     "TitlePane": {
       "Button": {
-        "preferredSize": "44,40",
-        "hoverBackground": "#FFFFFF10"
+        "preferredSize": "44,40"
       }
     },
 

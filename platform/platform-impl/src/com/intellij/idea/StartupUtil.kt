@@ -27,7 +27,9 @@ import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.util.ShutDownTracker
 import com.intellij.openapi.util.SystemInfoRt
 import com.intellij.openapi.util.registry.EarlyAccessRegistryManager
+import com.intellij.platform.diagnostic.telemetry.OpenTelemetryConfigurator
 import com.intellij.platform.diagnostic.telemetry.TelemetryManager
+import com.intellij.platform.diagnostic.telemetry.impl.TelemetryManagerImpl
 import com.intellij.ui.*
 import com.intellij.ui.mac.initMacApplication
 import com.intellij.ui.mac.screenmenu.Menu
@@ -37,6 +39,7 @@ import com.intellij.util.*
 import com.intellij.util.lang.ZipFilePool
 import com.intellij.util.ui.EDT
 import com.jetbrains.JBR
+import io.opentelemetry.sdk.OpenTelemetrySdkBuilder
 import kotlinx.coroutines.*
 import org.jetbrains.annotations.ApiStatus.Internal
 import org.jetbrains.ide.BuiltInServerManager
@@ -55,6 +58,7 @@ import java.nio.file.attribute.PosixFilePermission
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.*
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.BiConsumer
 import java.util.function.BiFunction
@@ -96,10 +100,11 @@ fun CoroutineScope.startApplication(args: List<String>,
                                     appStarterDeferred: Deferred<AppStarter>,
                                     mainScope: CoroutineScope,
                                     busyThread: Thread) {
-  CoroutineTracerShim.coroutineTracerShim = object : CoroutineTracerShim {
+  CoroutineTracerShim.coroutineTracer = object : CoroutineTracerShim {
     override suspend fun getTraceActivity() = com.intellij.diagnostic.getTraceActivity()
+    override fun rootTrace(): CoroutineContext = rootTask()
 
-    override suspend fun <T> subTask(name: String, context: CoroutineContext, action: suspend CoroutineScope.() -> T): T {
+    override suspend fun <T> span(name: String, context: CoroutineContext, action: suspend CoroutineScope.() -> T): T {
       return subtask(name = name, context = context, action = action)
     }
   }
@@ -195,10 +200,7 @@ fun CoroutineScope.startApplication(args: List<String>,
     updateFrameClassAndWindowIconAndPreloadSystemFonts(initLafJob)
   }
 
-  loadSystemLibsAndLogInfoAndInitMacApp(logDeferred = logDeferred,
-                                        appInfoDeferred = appInfoDeferred,
-                                        initUiDeferred = initLafJob,
-                                        args = args)
+  loadSystemLibsAndLogInfoAndInitMacApp(logDeferred, appInfoDeferred, initLafJob, args, mainScope)
 
   val euaDocumentDeferred = async { loadEuaDocument(appInfoDeferred) }
 
@@ -224,15 +226,6 @@ fun CoroutineScope.startApplication(args: List<String>,
     }
 
     PluginManagerCore.scheduleDescriptorLoading(coroutineScope = asyncScope, zipFilePoolDeferred = zipFilePoolDeferred)
-  }
-
-  // async - handle error separately
-  val telemetryInitJob = launch {
-    lockSystemDirsJob.join()
-    appInfoDeferred.join()
-    subtask("opentelemetry configuration") {
-      TelemetryManager.getInstance()
-    }
   }
 
   val isInternal = java.lang.Boolean.getBoolean(ApplicationManagerEx.IS_INTERNAL_PROPERTY)
@@ -271,46 +264,39 @@ fun CoroutineScope.startApplication(args: List<String>,
     }
   }
 
-  val initServiceContainerJob = launch {
-    initServiceContainer(app = appDeferred.await(), pluginSetDeferred = pluginSetDeferred)
-  }
-
   val appRegisteredJob = CompletableDeferred<Unit>()
 
-  val preloadCriticalServicesJob = async {
-    preInitApp(app = appDeferred.await(),
-               asyncScope = asyncScope,
-               initServiceContainerJob = initServiceContainerJob,
-               initLafJob = initLafJob,
-               telemetryInitJob = telemetryInitJob,
-               log = logDeferred.await(),
-               appRegisteredJob = appRegisteredJob,
-               euaDocumentDeferred = euaDocumentDeferred)
+  launch {
+    val classLoader = AppStarter::class.java.classLoader
+    Class.forName(TelemetryManagerImpl::class.java.name, true, classLoader)
+    Class.forName(OpenTelemetryConfigurator::class.java.name, true, classLoader)
+    Class.forName(OpenTelemetrySdkBuilder::class.java.name, true, classLoader)
   }
 
   val appLoaded = launch {
     val app = appDeferred.await()
 
-    // only here as the last - it is a heavy-weight (~350ms) activity, let's first schedule more important tasks
-    if (System.getProperty("idea.enable.coroutine.dump", "true").toBoolean()) {
-      asyncScope.launch(CoroutineName("coroutine debug probes init")) {
-        enableCoroutineDump()
-        JBR.getJstack()?.includeInfoFrom {
-          """
-    $COROUTINE_DUMP_HEADER
-    ${dumpCoroutines(stripDump = false)}
-    """
-        }
+    val telemetryInitJob = launch(CoroutineName("opentelemetry configuration")) {
+      try {
+        TelemetryManager.setTelemetryManager(TelemetryManagerImpl(app))
+      }
+      catch (e: CancellationException) {
+        throw e
+      }
+      catch (e: Throwable) {
+        logDeferred.await().error("Can't initialize OpenTelemetry: will use default (noop) SDK impl", e)
       }
     }
 
-    appRegisteredJob.join()
-    initServiceContainerJob.join()
-
-    initApplicationImpl(args = args.filterNot { CommandLineArgs.isKnownArgument(it) },
-                        app = app,
-                        preloadCriticalServicesJob = preloadCriticalServicesJob,
-                        asyncScope = asyncScope)
+    loadApp(app = app,
+            pluginSetDeferred = pluginSetDeferred,
+            euaDocumentDeferred = euaDocumentDeferred,
+            asyncScope = asyncScope,
+            initLafJob = initLafJob,
+            logDeferred = logDeferred,
+            appRegisteredJob = appRegisteredJob,
+            args = args,
+            telemetryInitJob = telemetryInitJob)
   }
 
   launch {
@@ -335,10 +321,11 @@ fun CoroutineScope.startApplication(args: List<String>,
   }
 }
 
-fun isConfigImportNeeded(configPath: Path): Boolean =
-  !Files.exists(configPath) ||
-  Files.exists(configPath.resolve(ConfigImportHelper.CUSTOM_MARKER_FILE_NAME)) ||
-  customTargetDirectoryToImportConfig != null
+fun isConfigImportNeeded(configPath: Path): Boolean {
+  return !Files.exists(configPath) ||
+         Files.exists(configPath.resolve(ConfigImportHelper.CUSTOM_MARKER_FILE_NAME)) ||
+         customTargetDirectoryToImportConfig != null
+}
 
 /**
  * Directory where the configuration files should be imported to.
@@ -352,7 +339,8 @@ var customTargetDirectoryToImportConfig: Path? = null
 private fun CoroutineScope.loadSystemLibsAndLogInfoAndInitMacApp(logDeferred: Deferred<Logger>,
                                                                  appInfoDeferred: Deferred<ApplicationInfoEx>,
                                                                  initUiDeferred: Job,
-                                                                 args: List<String>) {
+                                                                 args: List<String>,
+                                                                 mainScope: CoroutineScope) {
   launch {
     // this must happen after locking system dirs
     val log = logDeferred.await()
@@ -379,7 +367,7 @@ private fun CoroutineScope.loadSystemLibsAndLogInfoAndInitMacApp(logDeferred: De
       initUiDeferred.join()
       launch(CoroutineName("mac app init")) {
         runCatching {
-          initMacApplication()
+          initMacApplication(mainScope)
         }.getOrLogException(log)
       }
     }

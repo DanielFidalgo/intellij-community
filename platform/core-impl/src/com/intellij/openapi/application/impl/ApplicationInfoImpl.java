@@ -3,7 +3,6 @@ package com.intellij.openapi.application.impl;
 
 import com.intellij.ReviseWhenPortedToJDK;
 import com.intellij.diagnostic.Activity;
-import com.intellij.diagnostic.ActivityCategory;
 import com.intellij.diagnostic.StartUpMeasurer;
 import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.application.ApplicationNamesInfo;
@@ -56,12 +55,10 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   private String myCompanyUrl = "https://www.jetbrains.com/";
   private String mySplashImageUrl;
   private String myEapSplashImageUrl;
-  private String mySmallIconUrl = "/icon_small.png";
   private String mySvgIconUrl;
   private String mySvgEapIconUrl;
   private String mySmallSvgIconUrl;
   private String mySmallSvgEapIconUrl;
-  private String myToolWindowIconUrl = "/toolwindows/toolWindowProject.svg";
   private String myWelcomeScreenLogoUrl;
   private String myCustomAppIcon;
 
@@ -153,11 +150,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
         break;
 
         case "icon": {
-          mySmallIconUrl = child.getAttributeValue("size16", mySmallIconUrl);
-          String toolWindowIcon = getAttributeValue(child, "size12");
-          if (toolWindowIcon != null) {
-            myToolWindowIconUrl = toolWindowIcon;
-          }
           mySvgIconUrl = child.getAttributeValue("svg");
           mySmallSvgIconUrl = child.getAttributeValue("svg-small");
           myCustomAppIcon = child.getAttributeValue("custom");
@@ -330,7 +322,7 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
     synchronized (ApplicationInfoImpl.class) {
       result = instance;
       if (result == null) {
-        Activity activity = StartUpMeasurer.startActivity("app info loading", ActivityCategory.DEFAULT);
+        Activity activity = StartUpMeasurer.startActivity("app info loading");
         try {
           result = new ApplicationInfoImpl(ApplicationNamesInfo.initAndGetRawData());
           instance = result;
@@ -459,11 +451,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
   }
 
   @Override
-  public @NotNull String getSmallIconUrl() {
-    return mySmallIconUrl;
-  }
-
-  @Override
   public @NotNull String getApplicationSvgIconUrl() {
     return isEAP() && mySvgEapIconUrl != null ? mySvgEapIconUrl : mySvgIconUrl;
   }
@@ -480,11 +467,6 @@ public final class ApplicationInfoImpl extends ApplicationInfoEx {
 
   public @NotNull String getSmallApplicationSvgIconUrl(boolean isEap) {
     return isEap && mySmallSvgEapIconUrl != null ? mySmallSvgEapIconUrl : mySmallSvgIconUrl;
-  }
-
-  @Override
-  public String getToolWindowIconUrl() {
-    return myToolWindowIconUrl;
   }
 
   @Override

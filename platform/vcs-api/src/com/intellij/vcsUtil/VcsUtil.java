@@ -25,7 +25,10 @@ import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vcs.*;
 import com.intellij.openapi.vcs.actions.VcsContextFactory;
-import com.intellij.openapi.vcs.changes.*;
+import com.intellij.openapi.vcs.changes.Change;
+import com.intellij.openapi.vcs.changes.ChangeListManager;
+import com.intellij.openapi.vcs.changes.ContentRevision;
+import com.intellij.openapi.vcs.changes.IgnoredFileContentProvider;
 import com.intellij.openapi.vcs.history.ShortVcsRevisionNumber;
 import com.intellij.openapi.vcs.history.VcsRevisionNumber;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -76,16 +79,11 @@ public final class VcsUtil {
     return (int)Math.min(result, Integer.MAX_VALUE);
   }
 
-  public static void markFileAsDirty(final Project project, @NonNls String path) {
-    final FilePath filePath = VcsContextFactory.getInstance().createFilePathOn(new File(path));
-    VcsDirtyScopeManager.getInstance(project).fileDirty(filePath);
-  }
-
   /**
    * @return true if the given file resides under the root associated with any vcs
    */
   public static boolean isFileUnderVcs(Project project, @NotNull @NonNls String file) {
-    return getVcsFor(project, getFilePath(file)) != null;
+    return getVcsFor(project, getFilePath(file, false)) != null;
   }
 
   public static boolean isFileUnderVcs(Project project, @NotNull FilePath file) {
@@ -105,7 +103,7 @@ public final class VcsUtil {
   }
 
   public static boolean isFileForVcs(@NotNull @NonNls String path, Project project, AbstractVcs host) {
-    return getVcsFor(project, getFilePath(path)) == host;
+    return getVcsFor(project, getFilePath(path, false)) == host;
   }
 
   @Nullable
@@ -197,7 +195,12 @@ public final class VcsUtil {
     }
   }
 
+  /**
+   * @deprecated This method will detect {@link FilePath#isDirectory()} using NIO.
+   * Avoid using the method, if {@code isDirectory} is known from context or not important.
+   */
   @NotNull
+  @Deprecated
   public static FilePath getFilePath(@NotNull @NonNls String path) {
     return getFilePath(new File(path));
   }
@@ -207,7 +210,12 @@ public final class VcsUtil {
     return VcsContextFactory.getInstance().createFilePathOn(file);
   }
 
+  /**
+   * @deprecated This method will detect {@link FilePath#isDirectory()} using NIO.
+   * Avoid using the method, if {@code isDirectory} is known from context or not important.
+   */
   @NotNull
+  @Deprecated
   public static FilePath getFilePath(@NotNull File file) {
     return VcsContextFactory.getInstance().createFilePathOn(file);
   }

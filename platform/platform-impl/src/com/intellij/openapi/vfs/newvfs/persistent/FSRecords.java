@@ -1,11 +1,10 @@
-// Copyright 2000-2022 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.openapi.vfs.newvfs.persistent;
 
 import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.diagnostic.ThrottledLogger;
 import com.intellij.openapi.util.io.ByteArraySequence;
-import com.intellij.openapi.util.io.FileAttributes;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.newvfs.AttributeInputStream;
 import com.intellij.openapi.vfs.newvfs.AttributeOutputStream;
@@ -17,7 +16,6 @@ import com.intellij.openapi.vfs.newvfs.persistent.intercept.ConnectionIntercepto
 import com.intellij.serviceContainer.AlreadyDisposedException;
 import com.intellij.util.Processor;
 import com.intellij.util.SystemProperties;
-import com.intellij.util.io.DataOutputStream;
 import it.unimi.dsi.fastutil.ints.IntList;
 import org.jetbrains.annotations.*;
 
@@ -26,7 +24,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.function.IntPredicate;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -36,7 +33,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * all methods delegate to it.
  * <p>
  * Current policy: avoid use of this class outside of VFS impl code, inside VFS impl code migrate to use
- * the {@link FSRecordsImpl} _instance_ obtained by {@link #connect(List)}/{@link #getInstance()}.
+ * the {@link FSRecordsImpl} _instance_ obtained by {@link #getInstance()}, or {@link #connect(List)}, if
+ * you want new instance -- mostly applicable for tests.
  * <p>
  * This is very low-level API, intended to be used only by VFS implementation code only -- mainly
  * {@link PersistentFSImpl}. Inside VFS implementation all the calls should go through the instance
@@ -104,20 +102,14 @@ public final class FSRecords {
     return _impl;
   }
 
-  static synchronized void disconnect() {
-    FSRecordsImpl _impl = impl;
-    if (_impl != null) {
-      _impl.dispose();
-      impl = null;
-      disconnectLocationStackTrace = new Exception("VFS dispose stacktrace");
-    }
-  }
-
-
   private static @NotNull FSRecordsImpl implOrFail() {
     FSRecordsImpl _impl = impl;
-    if (_impl == null || _impl.isDisposed()) {
-      throw alreadyDisposed();
+    if (_impl == null) {
+      throw new IllegalStateException("VFS instance is not initialized yet");
+    }
+    else if (_impl.isDisposed()) {
+      //guaranteed to fail, and provides diagnostic:
+      _impl.checkNotDisposed();
     }
 
     return _impl;
@@ -128,27 +120,18 @@ public final class FSRecords {
     return implOrFail();
   }
 
+  static @Nullable FSRecordsImpl getInstanceIfCreatedAndNotDisposed() {
+    FSRecordsImpl _impl = impl;
+    return _impl == null || _impl.isDisposed() ? null : _impl;
+  }
 
   //========== FS records-as-a-whole properties: ==============================
 
-  public static int getVersion() {
-    return implOrFail().getVersion();
-  }
-
   public static long getCreationTimestamp() {
-    return implOrFail().getCreationTimestamp();
+    return getInstance().getCreationTimestamp();
   }
 
   //========== modifications counters: ========================================
-
-  static int getLocalModCount() {
-    return implOrFail().getLocalModCount();
-  }
-
-  @TestOnly
-  static int getPersistentModCount() {
-    return implOrFail().getPersistentModCount();
-  }
 
   public static long getNamesIndexModCount() {
     return implOrFail().getInvertedNameIndexModCount();
@@ -170,12 +153,11 @@ public final class FSRecords {
 
   //========== record allocation/deletion: ====================================
 
+
+  /** @deprecated Use FSRecords.getInstance().createRecord() instead */
+  @Deprecated(forRemoval = true)
   public static int createRecord() {
     return implOrFail().createRecord();
-  }
-
-  static void deleteRecordRecursively(int fileId) {
-    implOrFail().deleteRecordRecursively(fileId);
   }
 
   /**
@@ -195,28 +177,6 @@ public final class FSRecords {
   }
 
 
-  //========== FS roots manipulation: ========================================
-
-  @TestOnly
-  static int @NotNull [] listRoots() {
-    return impl.listRoots();
-  }
-
-  static int findOrCreateRootRecord(@NotNull String rootUrl) {
-    return implOrFail().findOrCreateRootRecord(rootUrl);
-  }
-
-  static void loadRootData(int id,
-                           @NotNull String path,
-                           @NotNull NewVirtualFileSystem fs) {
-    implOrFail().loadRootData(id, path, fs);
-  }
-
-  static void deleteRootRecord(int fileId) {
-    implOrFail().deleteRootRecord(fileId);
-  }
-
-
   //========== directory/children manipulation: =============================
 
   static void loadDirectoryData(int id,
@@ -228,10 +188,6 @@ public final class FSRecords {
 
   public static int @NotNull [] listIds(int fileId) {
     return implOrFail().listIds(fileId);
-  }
-
-  static boolean mayHaveChildren(int fileId) {
-    return implOrFail().mayHaveChildren(fileId);
   }
 
   /**
@@ -246,37 +202,10 @@ public final class FSRecords {
     return implOrFail().listNames(parentId);
   }
 
-  static boolean wereChildrenAccessed(int fileId) {
-    return impl.wereChildrenAccessed(fileId);
-  }
-
-  // Perform operation on children and save the list atomically:
-  // Obtain fresh children and try to apply `childrenConvertor` to the children of `parentId`.
-  // If everything is still valid (i.e. no one changed the list in the meantime), commit.
-  // Failing that, repeat pessimistically: retry converter inside write lock for fresh children and commit inside the same write lock
-  static @NotNull ListResult update(@NotNull VirtualFile parent,
-                                    int parentId,
-                                    @NotNull Function<? super ListResult, ListResult> childrenConvertor) {
-    return implOrFail().update(parent, parentId, childrenConvertor);
-  }
-
   static void moveChildren(int fromParentId,
                            int toParentId) {
     implOrFail().moveChildren(fromParentId, toParentId);
   }
-
-
-  //========== symlink manipulation: ========================================
-
-  static @Nullable String readSymlinkTarget(int fileId) {
-    return implOrFail().readSymlinkTarget(fileId);
-  }
-
-  static void storeSymlinkTarget(int fileId,
-                                 @Nullable String symlinkTarget) {
-    implOrFail().storeSymlinkTarget(fileId, symlinkTarget);
-  }
-
 
   //========== file name iterations: ========================================
 
@@ -292,10 +221,14 @@ public final class FSRecords {
 
   //========== file record fields accessors: ================================
 
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   public static int getParent(int fileId) {
     return implOrFail().getParent(fileId);
   }
 
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   static void setParent(int id,
                         int parentId) {
     implOrFail().setParent(id, parentId);
@@ -312,27 +245,8 @@ public final class FSRecords {
     return implOrFail().getName(fileId);
   }
 
-  static @NotNull CharSequence getNameSequence(int fileId) {
-    return implOrFail().getNameSequence(fileId);
-  }
-
   static CharSequence getNameByNameId(int nameId) {
     return implOrFail().getNameByNameId(nameId);
-  }
-
-  static void setName(int fileId,
-                      @NotNull String name,
-                      int oldNameId) {
-    implOrFail().setName(fileId, name, oldNameId);
-  }
-
-  static void setFlags(int fileId,
-                       @PersistentFS.Attributes int flags) {
-    implOrFail().setFlags(fileId, flags);
-  }
-
-  static @PersistentFS.Attributes int getFlags(int fileId) {
-    return implOrFail().getFlags(fileId);
   }
 
   @ApiStatus.Internal
@@ -340,38 +254,30 @@ public final class FSRecords {
     return implOrFail().isDeleted(fileId);
   }
 
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   static long getLength(int fileId) {
     return implOrFail().getLength(fileId);
   }
 
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   static void setLength(int fileId,
                         long length) {
     implOrFail().setLength(fileId, length);
   }
 
-  /**
-   * @return nameId > 0
-   */
-  static int updateRecordFields(int fileId,
-                                int parentId,
-                                @NotNull FileAttributes attributes,
-                                @NotNull String name,
-                                boolean overwriteMissed) {
-    return implOrFail().updateRecordFields(fileId, parentId, attributes, name, overwriteMissed);
-  }
-
-
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   static long getTimestamp(int fileId) {
     return implOrFail().getTimestamp(fileId);
   }
 
+  /** @deprecated replace with apt FSRecords.getInstance() instance method */
+  @Deprecated(forRemoval = true)
   static void setTimestamp(int fileId,
                            long value) {
     implOrFail().setTimestamp(fileId, value);
-  }
-
-  static int getModCount(int fileId) {
-    return impl.getModCount(fileId);
   }
 
   //========== file attributes accessors: ===================================
@@ -408,44 +314,14 @@ public final class FSRecords {
 
   //========== file content accessors: ======================================
 
-  static int acquireFileContent(int fileId) {
-    return implOrFail().acquireFileContent(fileId);
-  }
-
   static @Nullable DataInputStream readContent(int fileId) {
     return implOrFail().readContent(fileId);
-  }
-
-  static @NotNull DataInputStream readContentById(int contentId) {
-    return implOrFail().readContentById(contentId);
-  }
-
-  static void releaseContent(int contentId) {
-    implOrFail().releaseContent(contentId);
-  }
-
-  static int getContentId(int fileId) {
-    return implOrFail().getContentRecordId(fileId);
-  }
-
-  @TestOnly
-  static byte[] getContentHash(int fileId) {
-    return implOrFail().getContentHash(fileId);
-  }
-
-  static @NotNull DataOutputStream writeContent(int fileId,
-                                                boolean fixedSize) {
-    return implOrFail().writeContent(fileId, fixedSize);
   }
 
   static void writeContent(int fileId,
                            @NotNull ByteArraySequence bytes,
                            boolean fixedSize) {
     implOrFail().writeContent(fileId, bytes, fixedSize);
-  }
-
-  static int storeUnlinkedContent(byte[] bytes) {
-    return implOrFail().storeUnlinkedContent(bytes);
   }
 
   //========== aux: ========================================================
@@ -507,14 +383,5 @@ public final class FSRecords {
     if (_impl != null && !_impl.isDisposed()) {
       _impl.checkFilenameIndexConsistency();
     }
-  }
-
-  @NotNull
-  private static AlreadyDisposedException alreadyDisposed() {
-    AlreadyDisposedException alreadyDisposed = new AlreadyDisposedException("VFS is already disposed");
-    if (disconnectLocationStackTrace != null) {
-      alreadyDisposed.addSuppressed(disconnectLocationStackTrace);
-    }
-    return alreadyDisposed;
   }
 }

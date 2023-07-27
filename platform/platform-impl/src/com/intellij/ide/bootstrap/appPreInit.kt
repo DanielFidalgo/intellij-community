@@ -1,9 +1,7 @@
 // Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.ide.bootstrap
 
-import com.intellij.diagnostic.LoadingState
-import com.intellij.diagnostic.StartUpMeasurer
-import com.intellij.diagnostic.subtask
+import com.intellij.diagnostic.*
 import com.intellij.icons.AllIcons
 import com.intellij.ide.ApplicationLoadListener
 import com.intellij.ide.gdpr.EndUserAgreement
@@ -11,27 +9,100 @@ import com.intellij.ide.plugins.PluginSet
 import com.intellij.ide.ui.IconMapLoader
 import com.intellij.ide.ui.LafManager
 import com.intellij.ide.ui.UISettings
+import com.intellij.ide.ui.laf.UiThemeProviderListManager
 import com.intellij.idea.AppMode
 import com.intellij.idea.AppStarter
+import com.intellij.idea.CommandLineArgs
 import com.intellij.idea.prepareShowEuaIfNeededTask
 import com.intellij.internal.statistic.collectors.fus.actions.persistence.ActionsEventLogGroup
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.impl.ApplicationImpl
 import com.intellij.openapi.application.impl.RawSwingDispatcher
-import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceAsync
 import com.intellij.openapi.components.stateStore
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.diagnostic.getOrLogException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.colors.EditorColorsManager
-import com.intellij.openapi.util.IconLoader
 import com.intellij.ui.AnimatedIcon
 import com.intellij.util.ui.AsyncProcessIcon
+import com.jetbrains.JBR
 import kotlinx.coroutines.*
-import org.jetbrains.annotations.VisibleForTesting
 
-internal suspend fun initServiceContainer(app: ApplicationImpl, pluginSetDeferred: Deferred<Deferred<PluginSet>>) {
+internal fun CoroutineScope.loadApp(app: ApplicationImpl,
+                                    pluginSetDeferred: Deferred<Deferred<PluginSet>>,
+                                    euaDocumentDeferred: Deferred<EndUserAgreement.Document?>,
+                                    asyncScope: CoroutineScope,
+                                    initLafJob: Job,
+                                    logDeferred: Deferred<Logger>,
+                                    appRegisteredJob: CompletableDeferred<Unit>,
+                                    args: List<String>,
+                                    telemetryInitJob: Job) {
+  val initServiceContainerJob = launch {
+    initServiceContainer(app = app, pluginSetDeferred = pluginSetDeferred)
+
+    subtask("telemetry waiting") {
+      telemetryInitJob.join()
+    }
+  }
+
+  val euaTaskDeferred: Deferred<(suspend () -> Boolean)?>? = if (AppMode.isHeadless()) {
+    null
+  }
+  else {
+    async(CoroutineName("eua document")) {
+      prepareShowEuaIfNeededTask(document = euaDocumentDeferred.await(), asyncScope = asyncScope)
+    }
+  }
+
+  val initConfigurationStoreJob = launch {
+    initServiceContainerJob.join()
+    initConfigurationStore(app)
+  }
+
+  val preloadCriticalServicesJob = async(CoroutineName("app pre-initialization")) {
+    initConfigurationStoreJob.join()
+    preInitApp(app = app,
+               asyncScope = asyncScope,
+               initLafJob = initLafJob,
+               log = logDeferred.await(),
+               appRegisteredJob = appRegisteredJob,
+               euaTaskDeferred = euaTaskDeferred)
+    LoadingState.setCurrentState(LoadingState.COMPONENTS_LOADED)
+  }
+
+  launch {
+    initServiceContainerJob.join()
+
+    val appInitListeners = async(CoroutineName("app init listener preload")) {
+      getAppInitializedListeners(app)
+    }
+
+    // only here as the last - it is a heavy-weight (~350ms) activity, let's first schedule more important tasks
+    if (System.getProperty("idea.enable.coroutine.dump", "true").toBoolean()) {
+      launch(CoroutineName("coroutine debug probes init")) {
+        enableCoroutineDump()
+        JBR.getJstack()?.includeInfoFrom {
+          """
+      $COROUTINE_DUMP_HEADER
+      ${dumpCoroutines(stripDump = false)}
+      """
+        }
+      }
+    }
+
+    initConfigurationStoreJob.join()
+    appRegisteredJob.join()
+
+    initApplicationImpl(args = args.filterNot { CommandLineArgs.isKnownArgument(it) },
+                        appInitListeners = appInitListeners,
+                        app = app,
+                        preloadCriticalServicesJob = preloadCriticalServicesJob,
+                        asyncScope = asyncScope)
+  }
+}
+
+private suspend fun initServiceContainer(app: ApplicationImpl, pluginSetDeferred: Deferred<Deferred<PluginSet>>) {
   val pluginSet = subtask("plugin descriptor init waiting") {
     pluginSetDeferred.await().await()
   }
@@ -44,43 +115,16 @@ internal suspend fun initServiceContainer(app: ApplicationImpl, pluginSetDeferre
   }
 }
 
-internal suspend fun preInitApp(app: ApplicationImpl,
+private suspend fun preInitApp(app: ApplicationImpl,
                                 asyncScope: CoroutineScope,
                                 log: Logger,
-                                initServiceContainerJob: Job,
                                 initLafJob: Job,
                                 appRegisteredJob: Job,
-                                telemetryInitJob: Job,
-                                euaDocumentDeferred: Deferred<EndUserAgreement.Document?>) {
+                                euaTaskDeferred: Deferred<(suspend () -> Boolean)?>?) {
   coroutineScope {
-    val euaTaskDeferred: Deferred<(suspend () -> Boolean)?>? = if (AppMode.isHeadless()) {
-      null
+    launch(CoroutineName("critical services preloading")) {
+      preloadCriticalServices(app = app, asyncScope = asyncScope, appRegistered = appRegisteredJob, initLafJob = initLafJob)
     }
-    else {
-      async(CoroutineName("eua document")) {
-        prepareShowEuaIfNeededTask(document = euaDocumentDeferred.await(), asyncScope = asyncScope)
-      }
-    }
-
-    launch(CoroutineName("telemetry waiting")) {
-      try {
-        telemetryInitJob.join()
-      }
-      catch (e: CancellationException) {
-        throw e
-      }
-      catch (e: Throwable) {
-        log.error("Can't initialize OpenTelemetry: will use default (noop) SDK impl", e)
-      }
-    }
-
-    if (app.isInternal && !app.isHeadlessEnvironment) {
-      launch {
-        IconLoader.setStrictGlobally(true)
-      }
-    }
-
-    initServiceContainerJob.join()
 
     val loadIconMapping = if (app.isHeadlessEnvironment) {
       null
@@ -88,15 +132,9 @@ internal suspend fun preInitApp(app: ApplicationImpl,
     else {
       launch(CoroutineName("icon mapping loading")) {
         runCatching {
-          app.service<IconMapLoader>().preloadIconMapping()
+          app.serviceAsync<IconMapLoader>().preloadIconMapping()
         }.getOrLogException(log)
       }
-    }
-
-    initConfigurationStore(app)
-
-    launch(CoroutineName("critical services preloading")) {
-      preloadCriticalServices(app = app, asyncScope = asyncScope, appRegistered = appRegisteredJob, initLafJob = initLafJob)
     }
 
     if (!app.isHeadlessEnvironment) {
@@ -124,9 +162,17 @@ internal suspend fun preInitApp(app: ApplicationImpl,
         }
       }
 
-      loadIconMapping?.join()
-      // preloaded as a part of preloadCriticalServices, used by LafManager
-      app.serviceAsync<UISettings>()
+      coroutineScope {
+        loadIconMapping?.join()
+        launch {
+          // used by LafManager
+          app.serviceAsync<UISettings>()
+        }
+        launch(CoroutineName("UiThemeProviderListManager preloading")) {
+          app.serviceAsync<UiThemeProviderListManager>()
+        }
+      }
+
       subtask("laf initialization", RawSwingDispatcher) {
         app.serviceAsync<LafManager>()
       }
@@ -140,7 +186,6 @@ internal suspend fun preInitApp(app: ApplicationImpl,
   }
 }
 
-@VisibleForTesting
 suspend fun initConfigurationStore(app: ApplicationImpl) {
   val configPath = PathManager.getConfigDir()
 
@@ -157,6 +202,6 @@ suspend fun initConfigurationStore(app: ApplicationImpl) {
   subtask("init app store") {
     // we set it after beforeApplicationLoaded call, because the app store can depend on a stream provider state
     app.stateStore.setPath(configPath)
-    StartUpMeasurer.setCurrentState(LoadingState.CONFIGURATION_STORE_INITIALIZED)
+    LoadingState.setCurrentState(LoadingState.CONFIGURATION_STORE_INITIALIZED)
   }
 }

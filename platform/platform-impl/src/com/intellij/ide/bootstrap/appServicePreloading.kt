@@ -1,7 +1,10 @@
 // Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.ide.bootstrap
 
-import com.intellij.diagnostic.*
+import com.intellij.diagnostic.DebugLogManager
+import com.intellij.diagnostic.PerformanceWatcher
+import com.intellij.diagnostic.PluginException
+import com.intellij.diagnostic.subtask
 import com.intellij.history.LocalHistory
 import com.intellij.ide.GeneralSettings
 import com.intellij.ide.ScreenReaderStateManager
@@ -13,7 +16,6 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.application.PathMacros
 import com.intellij.openapi.application.impl.ApplicationImpl
 import com.intellij.openapi.application.impl.RawSwingDispatcher
-import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceAsync
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.ExtensionPointName
@@ -25,6 +27,7 @@ import com.intellij.openapi.util.registry.RegistryManager
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.ManagingFS
 import com.intellij.openapi.vfs.pointers.VirtualFilePointerManager
+import com.intellij.util.indexing.FileBasedIndex
 import kotlinx.coroutines.*
 import java.util.concurrent.CancellationException
 
@@ -34,29 +37,29 @@ fun CoroutineScope.preloadCriticalServices(app: ApplicationImpl, asyncScope: Cor
     app.serviceAsync<PathMacros>()
   }
 
-  val managingFsJob = launch {
+  val managingFsJob = asyncScope.launch {
     // loading is started by StartupUtil, here we just "join" it
     subtask("ManagingFS preloading") { app.serviceAsync<ManagingFS>() }
 
     // PlatformVirtualFileManager also wants ManagingFS
-    launch { app.serviceAsync<VirtualFileManager>() }
+    launch(CoroutineName("VirtualFileManager preloading")) { app.serviceAsync<VirtualFileManager>() }
 
     // LocalHistory wants ManagingFS.
     // It should be fixed somehow, but for now, to avoid thread contention, preload it in a controlled manner.
-    asyncScope.launch { app.getServiceAsyncIfDefined(LocalHistory::class.java) }
+    asyncScope.launch(CoroutineName("LocalHistory preloading")) { app.getServiceAsyncIfDefined(LocalHistory::class.java) }
   }
 
   launch {
-    pathMacroJob.join()
-
     // required for indexing tasks (see JavaSourceModuleNameIndex, for example)
     // FileTypeManager by mistake uses PropertiesComponent instead of own state - it should be fixed someday
     app.serviceAsync<PropertiesComponent>()
 
+    pathMacroJob.join()
+
     // FileTypeManager requires appStarter execution
     launch {
       appRegistered.join()
-      postAppRegistered(app, asyncScope, managingFsJob)
+      postAppRegistered(app = app, asyncScope = asyncScope, managingFsJob = managingFsJob)
     }
 
     asyncScope.launch {
@@ -67,15 +70,14 @@ fun CoroutineScope.preloadCriticalServices(app: ApplicationImpl, asyncScope: Cor
 
   asyncScope.launch {
     launch {
-      pathMacroJob.join()
       app.serviceAsync<RegistryManager>()
     }
+
+    pathMacroJob.join()
 
     if (app.isHeadlessEnvironment) {
       return@launch
     }
-
-    pathMacroJob.join()
 
     launch {
       // https://youtrack.jetbrains.com/issue/IDEA-321138/Large-font-size-in-2023.2
@@ -97,25 +99,39 @@ fun CoroutineScope.preloadCriticalServices(app: ApplicationImpl, asyncScope: Cor
     subtask("KeymapManager preloading") { app.serviceAsync<KeymapManager>() }
     subtask("ActionManager preloading") { app.serviceAsync<ActionManager>() }
 
-    // serviceAsync is not supported for light services
-    app.service<ScreenReaderStateManager>()
+    app.serviceAsync<ScreenReaderStateManager>()
   }
 }
 
 private fun CoroutineScope.postAppRegistered(app: ApplicationImpl, asyncScope: CoroutineScope, managingFsJob: Job) {
-  launch {
-    managingFsJob.join()
-
-    // ProjectJdkTable wants FileTypeManager and VirtualFilePointerManager
-    coroutineScope {
-      launch {
-        app.serviceAsync<FileTypeManager>()
-      }
-      // wants ManagingFS
-      launch { app.serviceAsync<VirtualFilePointerManager>() }
+  asyncScope.launch {
+    val fileTypeManagerJob = launch(CoroutineName("FileTypeManager preloading")) {
+      app.serviceAsync<FileTypeManager>()
     }
 
-    app.serviceAsync<ProjectJdkTable>()
+    managingFsJob.join()
+
+    launch {
+      fileTypeManagerJob.join()
+      val fileBasedIndex = subtask("FileBasedIndex preloading") {
+        app.serviceAsync<FileBasedIndex>()
+      }
+      subtask("FileBasedIndex.loadIndexes") {
+        fileBasedIndex.loadIndexes()
+      }
+    }
+
+    launch {
+      // ProjectJdkTable wants FileTypeManager and VirtualFilePointerManager
+      fileTypeManagerJob.join()
+      // wants ManagingFS
+      subtask("VirtualFilePointerManager preloading") {
+        app.serviceAsync<VirtualFilePointerManager>()
+      }
+      subtask("ProjectJdkTable preloading") {
+        app.serviceAsync<ProjectJdkTable>()
+      }
+    }
   }
 
   launch(CoroutineName("app service preloading (sync)")) {
@@ -134,7 +150,6 @@ private fun CoroutineScope.postAppRegistered(app: ApplicationImpl, asyncScope: C
         loadComponentInEdtTask()
       }
     }
-    StartUpMeasurer.setCurrentState(LoadingState.COMPONENTS_LOADED)
   }
 
   if (!app.isHeadlessEnvironment && !app.isUnitTestMode && System.getProperty("enable.activity.preloading", "true").toBoolean()) {
@@ -142,9 +157,9 @@ private fun CoroutineScope.postAppRegistered(app: ApplicationImpl, asyncScope: C
       @Suppress("DEPRECATION")
       val extensionPoint = app.extensionArea.getExtensionPoint<com.intellij.openapi.application.PreloadingActivity>("com.intellij.preloadingActivity")
       @Suppress("DEPRECATION")
-      ExtensionPointName<com.intellij.openapi.application.PreloadingActivity>("com.intellij.preloadingActivity").processExtensions { preloadingActivity, pluginDescriptor ->
-        launch {
-          executePreloadActivity(preloadingActivity, pluginDescriptor)
+      ExtensionPointName<com.intellij.openapi.application.PreloadingActivity>("com.intellij.preloadingActivity").processExtensions { activity, pluginDescriptor ->
+        launch(CoroutineName(activity.javaClass.name)) {
+          executePreloadActivity(activity, pluginDescriptor)
         }
       }
       extensionPoint.reset()
@@ -154,7 +169,6 @@ private fun CoroutineScope.postAppRegistered(app: ApplicationImpl, asyncScope: C
 
 @Suppress("DEPRECATION")
 private suspend fun executePreloadActivity(activity: com.intellij.openapi.application.PreloadingActivity, descriptor: PluginDescriptor) {
-  val measureActivity = StartUpMeasurer.startActivity(activity.javaClass.name, ActivityCategory.PRELOAD_ACTIVITY, descriptor.pluginId.idString)
   try {
     activity.execute()
   }
@@ -162,9 +176,7 @@ private suspend fun executePreloadActivity(activity: com.intellij.openapi.applic
     throw e
   }
   catch (e: Throwable) {
-    logger<com.intellij.openapi.application.PreloadingActivity>().error(PluginException("cannot execute preloading activity ${activity.javaClass.name}", e, descriptor.pluginId))
-  }
-  finally {
-    measureActivity.end()
+    logger<com.intellij.openapi.application.PreloadingActivity>()
+      .error(PluginException("cannot execute preloading activity ${activity.javaClass.name}", e, descriptor.pluginId))
   }
 }

@@ -7,14 +7,19 @@ package com.intellij.ide.bootstrap
 
 import com.intellij.diagnostic.subtask
 import com.intellij.ide.*
-import com.intellij.ide.plugins.PluginManagerMain
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.ide.plugins.marketplace.statistics.PluginManagerUsageCollector
+import com.intellij.ide.plugins.marketplace.statistics.enums.DialogAcceptanceResultEnum
 import com.intellij.idea.*
 import com.intellij.openapi.application.*
 import com.intellij.openapi.application.ex.ApplicationEx
 import com.intellij.openapi.application.impl.ApplicationImpl
+import com.intellij.openapi.components.serviceAsync
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.extensions.impl.ExtensionsAreaImpl
 import com.intellij.openapi.extensions.impl.findByIdOrFromInstance
+import com.intellij.openapi.updateSettings.impl.UpdateSettings
 import com.intellij.openapi.util.SystemPropertyBean
 import com.intellij.openapi.util.io.OSAgnosticPathUtil
 import com.intellij.ui.AppIcon
@@ -47,42 +52,39 @@ fun initApplication(context: InitAppContext) {
 internal suspend fun initApplicationImpl(args: List<String>,
                                          app: ApplicationImpl,
                                          asyncScope: CoroutineScope,
-                                         preloadCriticalServicesJob: Job) {
+                                         preloadCriticalServicesJob: Job,
+                                         appInitListeners: Deferred<List<ApplicationInitializedListener>>) {
   val starter = subtask("app initialization") {
     val deferredStarter = subtask("app starter creation") {
-      createAppStarterAsync(args)
+      createAppStarter(args)
     }
 
-    val appInitializedListeners = coroutineScope {
-      val appInitListeners = async(CoroutineName("app init listener preload")) {
-        getAppInitializedListeners(app)
+    launch {
+      val appInitializedListeners = appInitListeners.await()
+      subtask("app initialized callback") {
+        // An async scope here is intended for FLOW. FLOW!!! DO NOT USE the surrounding main scope.
+        callAppInitialized(listeners = appInitializedListeners, asyncScope = app.coroutineScope)
+      }
+    }
+
+    asyncScope.launch {
+      launch(CoroutineName("checkThirdPartyPluginsAllowed")) {
+        checkThirdPartyPluginsAllowed()
       }
 
       // doesn't block app start-up
-      asyncScope.launch(CoroutineName("post app init tasks")) {
+      launch(CoroutineName("post app init tasks")) {
         runPostAppInitTasks()
       }
 
-      subtask("waiting for preloadCriticalServicesJob") {
-        preloadCriticalServicesJob.join()
-      }
-
-      asyncScope.launch {
-        addActivateAndWindowsCliListeners()
-      }
-
-      asyncScope.launch(CoroutineName("checkThirdPartyPluginsAllowed")) {
-        PluginManagerMain.checkThirdPartyPluginsAllowed()
-      }
-
-      appInitListeners.await()
+      addActivateAndWindowsCliListeners()
     }
 
-    subtask("app initialized callback") {
-      // An async scope here is intended for FLOW. FLOW!!! DO NOT USE the surrounding main scope.
-      callAppInitialized(listeners = appInitializedListeners, asyncScope = app.coroutineScope)
-    }
     deferredStarter.await()
+  }
+
+  subtask("waiting for preloadCriticalServicesJob") {
+    preloadCriticalServicesJob.join()
   }
 
   if (starter.requiredModality == ApplicationStarter.NOT_IN_EDT) {
@@ -131,7 +133,7 @@ private fun CoroutineScope.runPostAppInitTasks() {
 }
 
 // `ApplicationStarter` is an extension, so to find a starter, extensions must be registered first
-private fun CoroutineScope.createAppStarterAsync(args: List<String>): Deferred<ApplicationStarter> {
+private fun CoroutineScope.createAppStarter(args: List<String>): Deferred<ApplicationStarter> {
   val first = args.firstOrNull()
   // first argument maybe a project path
   if (first == null) {
@@ -237,13 +239,25 @@ private suspend fun handleExternalCommand(args: List<String>, currentDirectory: 
 
 fun findStarter(key: String): ApplicationStarter? {
   @Suppress("DEPRECATION")
-  return ApplicationStarter.EP_NAME.findByIdOrFromInstance(key) { it.commandName }
+  return ExtensionPointName<ApplicationStarter>("com.intellij.appStarter").findByIdOrFromInstance(key) { it.commandName }
 }
 
+@VisibleForTesting
 fun CoroutineScope.callAppInitialized(listeners: List<ApplicationInitializedListener>, asyncScope: CoroutineScope) {
   for (listener in listeners) {
-    launch {
+    launch(CoroutineName(listener::class.java.name)) {
       listener.execute(asyncScope)
     }
+  }
+}
+
+private suspend fun checkThirdPartyPluginsAllowed() {
+  val noteAccepted = PluginManagerCore.isThirdPartyPluginsNoteAccepted() ?: return
+  if (noteAccepted) {
+    serviceAsync<UpdateSettings>().isThirdPartyPluginsAllowed = true
+    PluginManagerUsageCollector.thirdPartyAcceptanceCheck(DialogAcceptanceResultEnum.ACCEPTED)
+  }
+  else  {
+    PluginManagerUsageCollector.thirdPartyAcceptanceCheck(DialogAcceptanceResultEnum.DECLINED)
   }
 }

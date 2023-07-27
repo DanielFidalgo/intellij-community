@@ -9,7 +9,6 @@ import com.intellij.codeInsight.hint.HintManager
 import com.intellij.codeInsight.hint.HintManagerImpl
 import com.intellij.concurrency.IdeaForkJoinWorkerThreadFactory
 import com.intellij.diagnostic.LoadingState
-import com.intellij.diagnostic.StartUpMeasurer
 import com.intellij.diagnostic.enableCoroutineDump
 import com.intellij.ide.bootstrap.callAppInitialized
 import com.intellij.ide.bootstrap.getAppInitializedListeners
@@ -20,7 +19,6 @@ import com.intellij.ide.plugins.PluginSet
 import com.intellij.idea.AppMode
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.impl.AWTExceptionHandler
 import com.intellij.openapi.application.impl.ApplicationImpl
 import com.intellij.openapi.application.impl.NonBlockingReadActionImpl
@@ -49,6 +47,7 @@ import com.intellij.openapi.vfs.impl.local.LocalFileSystemBase
 import com.intellij.openapi.vfs.newvfs.ManagingFS
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFSImpl
+import com.intellij.platform.diagnostic.telemetry.TelemetryManager
 import com.intellij.psi.PsiManager
 import com.intellij.psi.impl.DocumentCommitProcessor
 import com.intellij.psi.impl.DocumentCommitThread
@@ -173,7 +172,7 @@ private fun loadAppInUnitTestMode(isHeadless: Boolean) {
       }
     }
 
-    StartUpMeasurer.setCurrentState(LoadingState.APP_STARTED)
+    LoadingState.setCurrentState(LoadingState.APP_STARTED)
     (PersistentFS.getInstance() as PersistentFSImpl).cleanPersistedContents()
   }
   catch (e: InterruptedException) {
@@ -183,28 +182,18 @@ private fun loadAppInUnitTestMode(isHeadless: Boolean) {
 
 private suspend fun preloadServicesAndCallAppInitializedListeners(app: ApplicationImpl, pluginSet: PluginSet) {
   coroutineScope {
+    TelemetryManager.setNoopTelemetryManager()
     withTimeout(Duration.ofSeconds(40).toMillis()) {
       preloadCriticalServices(app = app,
                               asyncScope = app.coroutineScope,
                               appRegistered = CompletableDeferred(value = null),
                               initLafJob = CompletableDeferred(value = null))
-      app.preloadServices(
-        modules = pluginSet.getEnabledModules(),
-        activityPrefix = "",
-        syncScope = this,
-        asyncScope = app.coroutineScope,
-      )
     }
-
-    app.createInitOldComponentsTask()?.let { loadComponentInEdtTask ->
-      withContext(Dispatchers.EDT) {
-        loadComponentInEdtTask()
-      }
-    }
-    app.loadAppComponents()
+    LoadingState.setCurrentState(LoadingState.COMPONENTS_LOADED)
   }
 
   coroutineScope {
+    @Suppress("TestOnlyProblems")
     callAppInitialized(getAppInitializedListeners(app), app.coroutineScope)
   }
 }

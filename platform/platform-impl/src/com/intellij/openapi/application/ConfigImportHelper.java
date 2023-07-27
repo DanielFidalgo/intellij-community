@@ -72,8 +72,9 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
 
 import static com.intellij.ide.SpecialConfigFiles.*;
+import static com.intellij.ide.plugins.BundledPluginsStateKt.BUNDLED_PLUGINS_FILENAME;
 import static com.intellij.idea.SplashManagerKt.hideSplash;
-import static com.intellij.openapi.application.ImportOldConfigsUsagesCollector.ImportOldConfigsState.InitialImportScenario.*;
+import static com.intellij.openapi.application.ImportOldConfigsState.InitialImportScenario.*;
 
 @ApiStatus.Internal
 public final class ConfigImportHelper {
@@ -123,7 +124,7 @@ public final class ConfigImportHelper {
     ConfigDirsSearchResult guessedOldConfigDirs = findConfigDirectories(newConfigDir, pathSelectorOfOtherIde, settings);
     Path tempBackup = null;
     boolean vmOptionFileChanged = false;
-    ImportOldConfigsUsagesCollector.ImportOldConfigsState.InitialImportScenario importScenarioStatistics = null;
+    ImportOldConfigsState.InitialImportScenario importScenarioStatistics = null;
 
     try {
       Pair<Path, Path> oldConfigDirAndOldIdePath = null;
@@ -213,7 +214,7 @@ public final class ConfigImportHelper {
         settings.importFinished(newConfigDir, pathSelectorOfOtherIde);
       }
 
-      ImportOldConfigsUsagesCollector.ImportOldConfigsState.getInstance().reportImportScenario(importScenarioStatistics);
+      ImportOldConfigsState.Companion.getInstance().reportImportScenario(importScenarioStatistics);
       vmOptionFileChanged |= doesVmOptionsFileExist(newConfigDir);
     }
     finally {
@@ -1212,7 +1213,7 @@ public final class ConfigImportHelper {
   private static boolean shouldSkipFileDuringImport(Path path, @Nullable ConfigImportSettings settings) {
     String fileName = path.getFileName().toString();
     return SESSION_FILES.contains(fileName) ||
-           fileName.equals(BundledPluginsState.BUNDLED_PLUGINS_FILENAME) ||
+           fileName.equals(BUNDLED_PLUGINS_FILENAME) ||
            fileName.equals(ExpiredPluginsState.EXPIRED_PLUGINS_FILENAME) ||
            fileName.startsWith(CHROME_USER_DATA) ||
            fileName.endsWith(".jdk") && fileName.startsWith(String.valueOf(ApplicationNamesInfo.getInstance().getScriptName())) ||

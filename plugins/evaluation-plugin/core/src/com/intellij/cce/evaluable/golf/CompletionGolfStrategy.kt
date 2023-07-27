@@ -3,6 +3,7 @@ package com.intellij.cce.evaluable.golf
 
 import com.intellij.cce.core.SuggestionSource
 import com.intellij.cce.evaluable.EvaluationStrategy
+import com.intellij.cce.evaluable.completion.CompletionType
 import com.intellij.cce.filter.EvaluationFilter
 
 
@@ -18,26 +19,51 @@ If completion suggest only one token - this option is useless (see checkLine ↑
  *  - TAB_NINE  - <a href="https://github.com/codota/tabnine-intellij">https://github.com/codota/tabnine-intellij</a>
  *  - INTELLIJ  - <a href="https://jetbrains.team/p/ccrm/code/fl-inference">https://jetbrains.team/p/ccrm/code/fl-inference</a>
  * @param topN Take only N top suggestions, applying after filtering by source
- * @param isBenchmark Call completion once for each token.
- * @param randomSeed Random seed for evaluation. Currently used to select token prefix in benchmark mode.
  * @param suggestionsProvider Name of provider of suggestions (use DEFAULT for IDE completion)
  */
 data class CompletionGolfStrategy(
   val mode: CompletionGolfMode,
-  val checkLine: Boolean = true,
-  val invokeOnEachChar: Boolean = false,
+  val checkLine: Boolean,
+  val invokeOnEachChar: Boolean,
 
-  val checkToken: Boolean = true,
-  val source: SuggestionSource? = null,
-  var topN: Int = -1,
+  val checkToken: Boolean,
+  val source: SuggestionSource?,
+  var topN: Int,
 
-  val suggestionsProvider: String = DEFAULT_PROVIDER) : EvaluationStrategy {
+  val suggestionsProvider: String,
+  val pathToZipModel: String?,
+  val completionType: CompletionType) : EvaluationStrategy {
   override val filters: Map<String, EvaluationFilter> = emptyMap()
 
   fun isDefaultProvider(): Boolean = suggestionsProvider == DEFAULT_PROVIDER
 
   companion object {
-    private const val DEFAULT_PROVIDER: String = "DEFAULT"
+    const val DEFAULT_PROVIDER: String = "DEFAULT"
+  }
+
+  class Builder constructor(val mode: CompletionGolfMode) {
+    var checkLine: Boolean = true
+    var invokeOnEachChar: Boolean = false
+
+    var checkToken: Boolean = true
+    var source: SuggestionSource? = null
+    var topN: Int = -1
+
+    var suggestionsProvider: String = DEFAULT_PROVIDER
+    var pathToZipModel: String? = null
+    var completionType: CompletionType = CompletionType.ML
+
+    fun build(): CompletionGolfStrategy = CompletionGolfStrategy(
+      mode = mode,
+      checkLine = checkLine,
+      invokeOnEachChar = invokeOnEachChar,
+      checkToken = checkToken,
+      source = source,
+      topN = topN,
+      suggestionsProvider = suggestionsProvider,
+      pathToZipModel = pathToZipModel,
+      completionType = completionType
+    )
   }
 }
 

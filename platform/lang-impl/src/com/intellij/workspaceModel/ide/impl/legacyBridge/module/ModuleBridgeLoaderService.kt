@@ -2,7 +2,6 @@
 package com.intellij.workspaceModel.ide.impl.legacyBridge.module
 
 import com.intellij.diagnostic.subtask
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.components.serviceAsync
 import com.intellij.openapi.diagnostic.Logger
@@ -23,7 +22,6 @@ import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileIndex
 import com.intellij.workspaceModel.core.fileIndex.impl.WorkspaceFileIndexEx
 import com.intellij.workspaceModel.ide.JpsProjectLoadedListener
 import com.intellij.workspaceModel.ide.impl.GlobalWorkspaceModel
-import com.intellij.workspaceModel.ide.impl.WorkspaceModelFusLogger
 import com.intellij.workspaceModel.ide.impl.WorkspaceModelImpl
 import com.intellij.workspaceModel.ide.impl.jps.serialization.JpsProjectModelSynchronizer
 import com.intellij.workspaceModel.ide.impl.jpsMetrics
@@ -31,7 +29,6 @@ import com.intellij.workspaceModel.ide.impl.legacyBridge.library.ProjectLibraryT
 import com.intellij.workspaceModel.ide.impl.legacyBridge.project.ProjectRootManagerBridge
 import com.intellij.workspaceModel.ide.legacyBridge.GlobalLibraryTableBridge
 import io.opentelemetry.api.metrics.Meter
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -42,7 +39,7 @@ private val LOG: Logger
 private class ModuleBridgeLoaderService : ProjectServiceContainerInitializedListener {
   override suspend fun execute(project: Project) {
     coroutineScope {
-      val projectModelSynchronizer = JpsProjectModelSynchronizer.getInstance(project)
+      val projectModelSynchronizer = project.serviceAsync<JpsProjectModelSynchronizer>()
       val workspaceModel = project.serviceAsync<WorkspaceModel>() as WorkspaceModelImpl
 
       launch { project.serviceAsync<ProjectRootManager>() }
@@ -63,7 +60,7 @@ private class ModuleBridgeLoaderService : ProjectServiceContainerInitializedList
                       loadedFromCache = workspaceModel.loadedFromCache)
         }
         if (GlobalLibraryTableBridge.isEnabled()) {
-          val globalWorkspaceModel = ApplicationManager.getApplication().serviceAsync<GlobalWorkspaceModel>()
+          val globalWorkspaceModel = serviceAsync<GlobalWorkspaceModel>()
           writeAction {
             globalWorkspaceModel.applyStateToProject(project)
           }
@@ -87,10 +84,11 @@ private class ModuleBridgeLoaderService : ProjectServiceContainerInitializedList
       }
 
       subtask("tracked libraries setup") {
-        // required for setupTrackedLibrariesAndJdks - make sure that it is created to avoid blocking of EDT
-        val jdkTableDeferred = async { ApplicationManager.getApplication().serviceAsync<ProjectJdkTable>() }
-        val projectRootManager = project.serviceAsync<ProjectRootManager>() as ProjectRootManagerBridge
-        jdkTableDeferred.await()
+        val projectRootManager = coroutineScope {
+          // required for setupTrackedLibrariesAndJdks - make sure that it is created to avoid blocking of EDT
+          launch { serviceAsync<ProjectJdkTable>() }
+          project.serviceAsync<ProjectRootManager>() as ProjectRootManagerBridge
+        }
         writeAction {
           projectRootManager.setupTrackedLibrariesAndJdks()
         }

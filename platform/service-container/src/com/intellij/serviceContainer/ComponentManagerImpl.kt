@@ -315,7 +315,7 @@ abstract class ComponentManagerImpl(
 
     // app - phase must be set before getMessageBus()
     if (parent == null && !LoadingState.COMPONENTS_REGISTERED.isOccurred /* loading plugin on the fly */) {
-      StartUpMeasurer.setCurrentState(LoadingState.COMPONENTS_REGISTERED)
+      LoadingState.setCurrentState(LoadingState.COMPONENTS_REGISTERED)
     }
 
     // ensuring that `messageBus` is created, regardless of the lazy listener map state
@@ -404,6 +404,7 @@ abstract class ComponentManagerImpl(
 
   fun createInitOldComponentsTask(): (() -> Unit)? {
     if (componentAdapters.getImmutableSet().isEmpty()) {
+      containerState.compareAndSet(ContainerState.PRE_INIT, ContainerState.COMPONENT_CREATED)
       return null
     }
 
@@ -411,14 +412,8 @@ abstract class ComponentManagerImpl(
       for (componentAdapter in componentAdapters.getImmutableSet()) {
         componentAdapter.getInstance<Any>(this, keyClass = null)
       }
+      containerState.compareAndSet(ContainerState.PRE_INIT, ContainerState.COMPONENT_CREATED)
     }
-  }
-
-  // we cannot convert ApplicationImpl to kotlin yet
-  @TestOnly
-  suspend fun loadAppComponents() {
-    createComponentsNonBlocking()
-    StartUpMeasurer.setCurrentState(LoadingState.COMPONENTS_LOADED)
   }
 
   @Suppress("DuplicatedCode")
@@ -633,7 +628,7 @@ abstract class ComponentManagerImpl(
   final override suspend fun <T : Any> getServiceAsync(keyClass: Class<T>): T {
     val result = getServiceAsyncIfDefined(keyClass)
     if (result == null && isLightServiceSupported && isLightService(keyClass)) {
-      return getOrCreateLightServiceAdapater(keyClass).getInstanceAsync(componentManager = this, keyClass = keyClass)
+      return getOrCreateLightServiceAdapter(keyClass).getInstanceAsync(componentManager = this, keyClass = keyClass)
     }
     return result ?: throw RuntimeException("service is not defined for $keyClass")
   }
@@ -663,7 +658,7 @@ abstract class ComponentManagerImpl(
 
     if (isLightServiceSupported && isLightService(serviceClass)) {
       if (createIfNeeded) {
-        return getOrCreateLightServiceAdapater(serviceClass)
+        return getOrCreateLightServiceAdapter(serviceClass)
           .getInstance(componentManager = this, keyClass = serviceClass, createIfNeeded = true)!!
       }
       else {
@@ -694,6 +689,7 @@ abstract class ComponentManagerImpl(
       throw PluginException.createByClass("Light service class $serviceClass must be final", null, serviceClass)
     }
 
+    @Suppress("DEPRECATION")
     val result = getComponent(serviceClass) ?: return null
     PluginException.logPluginError(LOG,
       "$key requested as a service, but it is a component - " +
@@ -703,7 +699,7 @@ abstract class ComponentManagerImpl(
     return result
   }
 
-  private fun <T : Any> getOrCreateLightServiceAdapater(serviceClass: Class<T>): BaseComponentAdapter {
+  private fun <T : Any> getOrCreateLightServiceAdapter(serviceClass: Class<T>): BaseComponentAdapter {
     val adapter = componentKeyToAdapter.computeIfAbsent(serviceClass.name) {
       val classLoader = serviceClass.classLoader
       LightServiceComponentAdapter(
@@ -992,6 +988,9 @@ abstract class ComponentManagerImpl(
                       syncScope: CoroutineScope,
                       onlyIfAwait: Boolean = false,
                       asyncScope: CoroutineScope) {
+    // we want to group async preloaded services (parent trace), but `CoroutineScope()` requires explicit completion,
+    // so, we collect all services and then use launch
+    val asyncServices = mutableListOf<ServiceDescriptor>()
     for (plugin in modules) {
       for (service in getContainerDescriptor(plugin).services) {
         if (!isServiceSuitable(service) || (service.os != null && !isSuitableForOs(service.os))) {
@@ -1011,11 +1010,10 @@ abstract class ComponentManagerImpl(
           return
         }
 
-        val serviceInterface = getServiceInterface(service, this)
         if (plugin.pluginId != PluginManagerCore.CORE_ID) {
           val impl = getServiceImplementation(service, this)
           if (!servicePreloadingAllowListForNonCorePlugin.contains(impl)) {
-            val message = "`preload=true` should be used only for core services (service=$impl, plugin=${plugin.pluginId})"
+            val message = "`preload=true` must be used only for core services (service=$impl, plugin=${plugin.pluginId})"
             if (service.preload == PreloadMode.AWAIT) {
               LOG.error(PluginException(message, plugin.pluginId))
             }
@@ -1025,8 +1023,25 @@ abstract class ComponentManagerImpl(
           }
         }
 
-        scope.launch(CoroutineName("$serviceInterface preloading")) {
-          preloadService(service, serviceInterface)
+        if (scope === asyncScope) {
+          asyncServices.add(service)
+        }
+        else {
+          val serviceInterface = getServiceInterface(service, this)
+          scope.launch(CoroutineName("$serviceInterface preloading")) {
+            preloadService(service, serviceInterface)
+          }
+        }
+      }
+    }
+
+    if (asyncServices.isNotEmpty()) {
+      asyncScope.launch(CoroutineName("${activityPrefix}service preloading (async)")) {
+        for (service in asyncServices) {
+          val serviceInterface = getServiceInterface(service, this@ComponentManagerImpl)
+          launch(CoroutineName("$serviceInterface preloading")) {
+            preloadService(service, serviceInterface)
+          }
         }
       }
     }
@@ -1333,6 +1348,21 @@ abstract class ComponentManagerImpl(
     // Leaking the parent scope might lead to premature cancellation.
     // Fool proofing: a fresh child scope is created per instance to avoid leaking the parent to clients.
     return intersectionScope.namedChildScope(pluginClass.name)
+  }
+
+  // to run post-start-up activities - to not create scope for each class and do not keep it alive
+  fun pluginCoroutineScope(pluginClassloader: ClassLoader): CoroutineScope {
+    val intersectionScope = if (pluginClassloader is PluginAwareClassLoader) {
+      val pluginScope = pluginClassloader.pluginCoroutineScope
+      val parentScope = parent?.intersectionCoroutineScope(pluginScope) // for consistency
+                        ?: pluginScope
+      intersectionCoroutineScope(parentScope)
+    }
+    else {
+      // non-unloadable
+      getCoroutineScope()
+    }
+    return intersectionScope
   }
 
   private fun intersectionCoroutineScope(pluginScope: CoroutineScope): CoroutineScope {

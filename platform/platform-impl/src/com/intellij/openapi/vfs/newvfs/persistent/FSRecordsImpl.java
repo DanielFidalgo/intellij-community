@@ -331,7 +331,8 @@ public final class FSRecordsImpl {
     return disposed;
   }
 
-  private void checkNotDisposed() {
+  @Contract("->fail")
+  void checkNotDisposed() {
     if (disposed) {
       AlreadyDisposedException alreadyDisposed = new AlreadyDisposedException("VFS is already disposed");
       if (disposedStackTrace != null) {
@@ -591,7 +592,7 @@ public final class FSRecordsImpl {
     try {
       ListResult toSave;
       // optimization: if the children were never changed after list(), do not check for duplicates again
-      if (result.childrenWereChangedSinceLastList()) {
+      if (result.childrenWereChangedSinceLastList(this)) {
         children = list(parentId);
         toSave = childrenConvertor.apply(children);
       }
@@ -639,16 +640,20 @@ public final class FSRecordsImpl {
       updateLock.lock(maxId);
       try {
         try {
-          ListResult children = list(fromParentId);
+          ListResult childrenToMove = list(fromParentId);
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Move children from " + fromParentId + " to " + toParentId + "; children = " + children);
+            LOG.debug("Move children from " + fromParentId + " to " + toParentId + "; children = " + childrenToMove);
+          }
+
+          for (ChildInfo childToMove : childrenToMove.children) {
+            setParent(childToMove.getId(), toParentId);
           }
 
           connection.markRecordAsModified(toParentId);
-          treeAccessor.doSaveChildren(toParentId, children);
+          treeAccessor.doSaveChildren(toParentId, childrenToMove);
 
           connection.markRecordAsModified(fromParentId);
-          treeAccessor.doSaveChildren(fromParentId, new ListResult(Collections.emptyList(), fromParentId));
+          treeAccessor.doSaveChildren(fromParentId, new ListResult(getModCount(fromParentId), Collections.emptyList(), fromParentId));
         }
         catch (ProcessCanceledException e) {
           // NewVirtualFileSystem.list methods can be interrupted now
@@ -791,7 +796,7 @@ public final class FSRecordsImpl {
   }
 
 
-  int getParent(int fileId) {
+  public int getParent(int fileId) {
     try {
       checkNotDisposed();
       int parentId = connection.getRecords().getParent(fileId);
@@ -839,7 +844,7 @@ public final class FSRecordsImpl {
     }
   }
 
-  @NotNull String getName(int fileId) {
+  public @NotNull String getName(int fileId) {
     return getNameSequence(fileId).toString();
   }
 
